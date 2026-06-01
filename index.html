@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Crypto Futures Signal Tracker</title>
+  <link rel="stylesheet" href="style.css">
+  <!-- Google Fonts: Inter and Outfit -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <!-- Tabler Icons CDN -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css">
+  <!-- TradingView Lightweight Charts CDN -->
+  <script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
+</head>
+<body>
+  <!-- Main Grid Layout -->
+  <div id="app-container">
+    <!-- Topbar -->
+    <header id="topbar">
+      <div class="logo-area">
+        <i class="ti ti-chart-candle logo-icon"></i>
+        <span class="logo-text">CryptoSignal</span>
+      </div>
+      <div id="pair-tabs" class="pair-tabs-container">
+        <!-- Pair tabs loaded dynamically -->
+      </div>
+      <div class="topbar-right">
+        <div class="connection-status">
+          <span id="status-dot" class="status-dot disconnected"></span>
+          <span id="status-label">Connecting...</span>
+        </div>
+        <button id="alert-bell-btn" class="icon-btn" aria-label="View Alerts" popovertarget="alerts-popover">
+          <i class="ti ti-bell"></i>
+          <span id="alert-badge" class="badge hidden">0</span>
+        </button>
+        <button id="settings-btn" class="icon-btn" aria-label="Settings">
+          <i class="ti ti-settings"></i>
+        </button>
+      </div>
+    </header>
+
+    <!-- Main Content wrapper containing Sidebar, Main Area, and Right Panel -->
+    <div class="content-wrapper">
+      <!-- Sidebar -->
+      <aside id="sidebar">
+        <nav class="nav-menu">
+          <button class="nav-item active" data-page="dashboard">
+            <i class="ti ti-layout-dashboard"></i>
+            <span>Dashboard</span>
+          </button>
+          <button class="nav-item" data-page="signals">
+            <i class="ti ti-brain"></i>
+            <span>AI Signals</span>
+          </button>
+          <button class="nav-item" data-page="tradelog">
+            <i class="ti ti-history"></i>
+            <span>Trade Log</span>
+          </button>
+          <button class="nav-item" data-page="backtest">
+            <i class="ti ti-chart-line"></i>
+            <span>Backtest Stats</span>
+          </button>
+          <button class="nav-item" data-page="settings">
+            <i class="ti ti-adjustments"></i>
+            <span>Settings</span>
+          </button>
+        </nav>
+
+        <div class="watchlist-section">
+          <h3>Watchlist</h3>
+          <div id="watchlist-container" class="watchlist-list">
+            <!-- Watchlist rows populated dynamically -->
+          </div>
+        </div>
+
+        <div class="market-section">
+          <h3>Market Info</h3>
+          <div class="market-stat-row">
+            <span class="stat-label">BTC Dominance</span>
+            <span id="btc-dominance" class="stat-value">--%</span>
+          </div>
+          <div class="market-stat-row">
+            <span class="stat-label">Fear & Greed</span>
+            <span id="fear-greed" class="stat-value">--</span>
+          </div>
+          <div class="market-stat-row">
+            <span class="stat-label">Total Cap</span>
+            <span id="total-mcap" class="stat-value">$--</span>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Main Area -->
+      <main id="main-area">
+        <!-- Dashboard Page (Default) -->
+        <section id="page-dashboard" class="page-view active">
+          <!-- Live Chart & Overlays -->
+          <div class="chart-container-wrapper">
+            <div class="chart-header">
+              <div class="chart-title-area">
+                <h2 id="chart-pair-name">BTCUSDT</h2>
+                <div class="timeframe-selector">
+                  <button class="tf-btn" data-tf="15m">15m</button>
+                  <button class="tf-btn" data-tf="1h">1H</button>
+                  <button class="tf-btn active" data-tf="4h">4H</button>
+                  <button class="tf-btn" data-tf="1d">1D</button>
+                  <button class="tf-btn" data-tf="1w">1W</button>
+                </div>
+              </div>
+              <span id="market-mode-badge" class="badge badge-grey">TRANSITIONING</span>
+            </div>
+            <div id="chart-container">
+              <!-- Lightweight Chart injected here -->
+            </div>
+          </div>
+
+          <!-- Indicator Badge Strip -->
+          <div id="indicator-badges-strip" class="indicator-badges-strip">
+            <!-- Indicators badges injected here -->
+          </div>
+
+          <!-- Signal Cards Area -->
+          <div class="signal-cards-container">
+            <div class="signal-direction-group">
+              <h3>LONG / BUY SETUPS</h3>
+              <div id="long-signal-container" class="signal-card-wrapper">
+                <!-- Long signal card or No Signal placeholder -->
+              </div>
+            </div>
+            <div class="signal-direction-group">
+              <h3>SHORT / SELL SETUPS</h3>
+              <div id="short-signal-container" class="signal-card-wrapper">
+                <!-- Short signal card or No Signal placeholder -->
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- AI Signals Feed Page -->
+        <section id="page-signals" class="page-view">
+          <div class="page-header">
+            <h2>AI Signals Feed</h2>
+            <div class="feed-filters">
+              <select id="filter-pair" class="filter-select">
+                <option value="ALL">All Pairs</option>
+                <option value="BTCUSDT">BTCUSDT</option>
+                <option value="ETHUSDT">ETHUSDT</option>
+                <option value="SOLUSDT">SOLUSDT</option>
+                <option value="BNBUSDT">BNBUSDT</option>
+                <option value="XRPUSDT">XRPUSDT</option>
+              </select>
+              <select id="filter-direction" class="filter-select">
+                <option value="ALL">All Directions</option>
+                <option value="LONG">Long</option>
+                <option value="SHORT">Short</option>
+              </select>
+              <select id="filter-confidence" class="filter-select">
+                <option value="70">>= 70% Confidence</option>
+                <option value="80">>= 80% Confidence</option>
+                <option value="90">>= 90% Confidence</option>
+              </select>
+            </div>
+          </div>
+          <div id="signals-feed-list" class="signals-feed-list">
+            <!-- Dynamic signals feed -->
+          </div>
+        </section>
+
+        <!-- Trade Log Page -->
+        <section id="page-tradelog" class="page-view">
+          <div class="page-header">
+            <h2>Trade History Log</h2>
+            <div class="trade-log-controls">
+              <label class="paper-mode-toggle-label">
+                <input type="checkbox" id="paper-mode-checkbox" checked>
+                <span class="custom-toggle"></span>
+                <span>Paper Trade Mode (Global)</span>
+              </label>
+              <button id="export-csv-btn" class="secondary-btn">
+                <i class="ti ti-download"></i> Export CSV
+              </button>
+            </div>
+          </div>
+          <div class="table-container">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Pair</th>
+                  <th>Dir</th>
+                  <th>Entry</th>
+                  <th>Stop Loss</th>
+                  <th>TP1 (50%)</th>
+                  <th>TP2 (30%)</th>
+                  <th>TP3 (20%)</th>
+                  <th>Lev</th>
+                  <th>Conf</th>
+                  <th>Status</th>
+                  <th>Result</th>
+                  <th>PnL (USDT)</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="trade-log-tbody">
+                <!-- Log rows -->
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- Backtest Page -->
+        <section id="page-backtest" class="page-view">
+          <div class="page-header">
+            <h2>Backtest Statistics</h2>
+          </div>
+          <div class="metrics-grid">
+            <div class="metric-card">
+              <span class="metric-title">Win Rate</span>
+              <span id="backtest-winrate" class="metric-value">--%</span>
+              <span class="metric-sub">Last 20 Closed Trades</span>
+            </div>
+            <div class="metric-card">
+              <span class="metric-title">Average R:R</span>
+              <span id="backtest-avg-rr" class="metric-value">1 : --</span>
+              <span class="metric-sub">Risk to Reward Ratio</span>
+            </div>
+            <div class="metric-card">
+              <span class="metric-title">Total PnL</span>
+              <span id="backtest-pnl" class="metric-value">+$0.00</span>
+              <span class="metric-sub" id="backtest-pnl-sub">USDT</span>
+            </div>
+            <div class="metric-card">
+              <span class="metric-title">Total Signals</span>
+              <span id="backtest-total" class="metric-value">0</span>
+              <span class="metric-sub">Trades Taken</span>
+            </div>
+          </div>
+
+          <div class="backtest-visualizations">
+            <div class="chart-card">
+              <h3>Win / Loss Sequence (Last 20 Trades)</h3>
+              <div id="backtest-dots-container" class="dots-container">
+                <!-- Win loss dots -->
+              </div>
+            </div>
+            <div class="chart-card">
+              <h3>Equity Curve (Cumulative PnL)</h3>
+              <div id="equity-chart-container" style="height: 250px;">
+                <!-- Mini canvas or Lightweight Chart for equity -->
+              </div>
+            </div>
+            <div class="chart-card">
+              <h3>Confidence Score Win Distribution</h3>
+              <div id="confidence-distribution-container" class="dist-container">
+                <!-- Confidence stats bar graphs -->
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Settings Page -->
+        <section id="page-settings" class="page-view">
+          <div class="page-header">
+            <h2>Settings</h2>
+          </div>
+          <div class="settings-grid">
+            <form id="settings-form" class="settings-form">
+              <div class="form-group">
+                <label for="setting-account-size">Account Size (USDT)</label>
+                <input type="number" id="setting-account-size" min="50" step="10" required>
+                <small>Minimum $50, used to compute risk and sizing.</small>
+              </div>
+              <div class="form-group">
+                <label for="setting-risk-pct">Risk per Trade (%)</label>
+                <input type="number" id="setting-risk-pct" min="1" max="20" step="0.5" required>
+                <small>Maximum 20% per trade to protect capital.</small>
+              </div>
+              <div class="form-group">
+                <label for="setting-leverage">Default Leverage</label>
+                <select id="setting-leverage" required>
+                  <option value="3">3x</option>
+                  <option value="5">5x</option>
+                  <option value="7">7x</option>
+                  <option value="10">10x</option>
+                  <option value="15">15x</option>
+                  <option value="20">20x</option>
+                </select>
+                <small>Safe isolated margin default.</small>
+              </div>
+              <div class="form-group">
+                <label for="setting-loss-limit">Daily Loss Limit (Consecutive Losses)</label>
+                <input type="number" id="setting-loss-limit" min="1" max="5" step="1" required>
+                <small>Daily limit of consecutive losses before blocking signals.</small>
+              </div>
+              <div class="form-group checkbox-group">
+                <label>Active Pairs</label>
+                <div class="checkbox-options">
+                  <label><input type="checkbox" name="active-pairs" value="BTCUSDT"> BTC/USDT</label>
+                  <label><input type="checkbox" name="active-pairs" value="ETHUSDT"> ETH/USDT</label>
+                  <label><input type="checkbox" name="active-pairs" value="SOLUSDT"> SOL/USDT</label>
+                  <label><input type="checkbox" name="active-pairs" value="BNBUSDT"> BNB/USDT</label>
+                  <label><input type="checkbox" name="active-pairs" value="XRPUSDT"> XRP/USDT</label>
+                </div>
+              </div>
+              <div class="form-actions">
+                <button type="submit" class="primary-btn">Save Settings</button>
+                <button type="button" id="reset-log-btn" class="danger-btn">Reset Trade Log</button>
+              </div>
+            </form>
+          </div>
+        </section>
+      </main>
+
+      <!-- Right Panel -->
+      <aside id="right-panel">
+        <!-- Position Sizing Panel -->
+        <div class="panel-section calculator-section">
+          <h3>Risk & Position Size</h3>
+          <div id="calculator-container">
+            <!-- Position Calculator Form injected dynamically -->
+          </div>
+        </div>
+
+        <!-- On-Chain Pulse Section -->
+        <div class="panel-section pulse-section">
+          <h3>On-Chain Pulse</h3>
+          <div id="pulse-container" class="pulse-list">
+            <!-- Dynamic on-chain metrics -->
+          </div>
+        </div>
+
+        <!-- Alerts Feed Section -->
+        <div class="panel-section alerts-section">
+          <h3>Live Alert Feed</h3>
+          <div id="alerts-container" class="alerts-feed-list">
+            <!-- List of triggered alerts -->
+          </div>
+        </div>
+      </aside>
+    </div>
+  </div>
+
+  <!-- Popovers & Dialog Modals -->
+
+  <!-- Alerts Feed Popover (bell icon dropdown) -->
+  <div id="alerts-popover" popover class="popover-dropdown">
+    <div class="popover-header">
+      <h4>Recent Notifications</h4>
+      <button id="clear-alerts-btn" class="text-btn">Clear All</button>
+    </div>
+    <div id="popover-alerts-container" class="popover-alerts-list">
+      <!-- Alerts -->
+    </div>
+  </div>
+
+  <!-- Take Trade Modal Dialog -->
+  <dialog id="take-trade-dialog" class="custom-dialog">
+    <form method="dialog" id="take-trade-form">
+      <h3>Take Signal Setup</h3>
+      <div class="dialog-content">
+        <p>Confirm leverage and position sizing details to log this trade.</p>
+        <div class="stat-grid">
+          <div class="stat-item">
+            <span class="label">Pair</span>
+            <span id="modal-pair" class="value">BTCUSDT</span>
+          </div>
+          <div class="stat-item">
+            <span class="label">Direction</span>
+            <span id="modal-direction" class="value bullish">LONG</span>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="modal-leverage">Adjust Leverage</label>
+          <select id="modal-leverage" class="form-input">
+            <option value="3">3x</option>
+            <option value="5">5x</option>
+            <option value="7">7x</option>
+            <option value="10">10x</option>
+            <option value="15">15x</option>
+            <option value="20">20x</option>
+          </select>
+        </div>
+        <div class="calculator-preview-box">
+          <div class="preview-row"><span>Position Size</span><strong id="modal-size">-- BTC</strong></div>
+          <div class="preview-row"><span>Margin Required</span><strong id="modal-margin">$-- USDT</strong></div>
+          <div class="preview-row"><span>Liquidation Price</span><strong id="modal-liq" class="danger-text">$--</strong></div>
+        </div>
+        <div class="form-group">
+          <label for="modal-notes">Trade Notes / Strategy</label>
+          <textarea id="modal-notes" class="form-input" rows="2" placeholder="e.g. Entering at limit low, target TP2..."></textarea>
+        </div>
+      </div>
+      <div class="dialog-actions">
+        <button type="button" value="cancel" class="secondary-btn">Cancel</button>
+        <button type="submit" value="confirm" class="primary-btn">Confirm & Log Trade</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Complete / Exit Trade Modal Dialog -->
+  <dialog id="exit-trade-dialog" class="custom-dialog">
+    <form method="dialog" id="exit-trade-form">
+      <h3>Close Trade Record</h3>
+      <div class="dialog-content">
+        <div class="stat-grid">
+          <div class="stat-item">
+            <span class="label">Pair</span>
+            <span id="exit-modal-pair" class="value">BTCUSDT</span>
+          </div>
+          <div class="stat-item">
+            <span class="label">Entry Price</span>
+            <span id="exit-modal-entry" class="value">--</span>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="exit-modal-result">Trade Outcome</label>
+          <select id="exit-modal-result" class="form-input" required>
+            <option value="win">Win (Full TP hit)</option>
+            <option value="loss">Loss (Stop Loss hit)</option>
+            <option value="partial">Partial profit (TP1 hit + BE stop)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="exit-modal-price">Exit Price (USDT)</label>
+          <input type="number" id="exit-modal-price" step="0.0001" class="form-input" required>
+        </div>
+        <div class="form-group">
+          <label for="exit-modal-notes">Exit Notes</label>
+          <textarea id="exit-modal-notes" class="form-input" rows="2" placeholder="e.g. Stopped out at BE after partial profit."></textarea>
+        </div>
+      </div>
+      <div class="dialog-actions">
+        <button type="button" value="cancel" class="secondary-btn">Cancel</button>
+        <button type="submit" value="confirm" class="primary-btn">Save Exit PnL</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Daily Loss Suppressed Alert Banner (Overlay) -->
+  <div id="loss-limit-banner" class="modal-overlay hidden">
+    <div class="loss-limit-card">
+      <i class="ti ti-shield-lock alert-icon"></i>
+      <h2>Daily Loss Limit Reached</h2>
+      <p>You have hit 2 consecutive losses today. To protect your capital, no new signals will be visible until 00:00 UTC.</p>
+      <p class="quote">"Step away, review the market, and protect your capital. Preserving capital is the first rule of trading."</p>
+      <button id="dismiss-loss-banner-btn" class="primary-btn">Acknowledge</button>
+    </div>
+  </div>
+
+  <!-- Loading Overlay -->
+  <div id="loading-overlay" class="modal-overlay">
+    <div class="loading-spinner-container">
+      <div class="spinner"></div>
+      <p>Initializing CryptoSignal Engine & Fetching Data...</p>
+    </div>
+  </div>
+
+  <!-- Audio elements for sound effects -->
+  <audio id="signal-sound" src="https://assets.mixkit.co/active_storage/sfx/2869/2869-600.wav" preload="auto"></audio>
+
+  <!-- Main script loader -->
+  <script type="module" src="app.js"></script>
+</body>
+</html>

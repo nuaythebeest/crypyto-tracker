@@ -669,11 +669,30 @@ async function init() {
     navItems.forEach(item => {
       item.addEventListener('click', (e) => {
         navigateTo(e.currentTarget.dataset.page);
+        document.body.classList.remove('sidebar-open');
       });
     });
 
+    // Mobile Drawer navigation toggle and backdrop click
+    const menuToggleBtn = document.getElementById('menu-toggle-btn');
+    if (menuToggleBtn) {
+      menuToggleBtn.addEventListener('click', () => {
+        document.body.classList.toggle('sidebar-open');
+      });
+    }
+
+    const sidebarBackdrop = document.getElementById('sidebar-backdrop');
+    if (sidebarBackdrop) {
+      sidebarBackdrop.addEventListener('click', () => {
+        document.body.classList.remove('sidebar-open');
+      });
+    }
+
     // Topbar Settings shortcut
-    settingsBtn.addEventListener('click', () => navigateTo('settings'));
+    settingsBtn.addEventListener('click', () => {
+      navigateTo('settings');
+      document.body.classList.remove('sidebar-open');
+    });
     
     // Alerts Bell drop down clear button
     document.getElementById('clear-alerts-btn').addEventListener('click', () => {

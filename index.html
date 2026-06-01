@@ -20,6 +20,9 @@
     <!-- Topbar -->
     <header id="topbar">
       <div class="logo-area">
+        <button id="menu-toggle-btn" class="icon-btn mobile-only-btn" aria-label="Toggle Menu">
+          <i class="ti ti-menu-2"></i>
+        </button>
         <i class="ti ti-chart-candle logo-icon"></i>
         <span class="logo-text">CryptoSignal</span>
       </div>
@@ -43,6 +46,8 @@
 
     <!-- Main Content wrapper containing Sidebar, Main Area, and Right Panel -->
     <div class="content-wrapper">
+      <!-- Mobile Sidebar Backdrop -->
+      <div id="sidebar-backdrop" class="sidebar-backdrop"></div>
       <!-- Sidebar -->
       <aside id="sidebar">
         <nav class="nav-menu">

@@ -26,3 +26,12 @@ All modifications to the Crypto Futures Signal Tracker from this point forward w
 ### 4. Railway Deployment Files
 - **Problem**: Need to deploy the pure static HTML/JS application to Railway.
 - **Solution**: Added a custom `Dockerfile` using `nginx:alpine` to serve static files over HTTP, and added a `.gitignore` to prevent committing logs, environment files, or node modules.
+
+### 5. Mobile iPhone Responsive Optimization
+- **Problem**: The 3-column desktop layout was squashed and completely unusable on mobile devices (e.g. iPhone).
+- **Solution**:
+  - Implemented responsive CSS layout rules in `style.css` using media queries (`max-width: 992px` and `max-width: 768px`) that stack columns vertically without affecting the laptop layout.
+  - Converted the sidebar into a sliding navigation drawer, toggled via a new hamburger menu button in the topbar and dismissed by clicking a blurred backdrop overlay.
+  - Enabled swipeable/touch-scrolling behavior for the pair tab bar in the topbar on narrow viewports.
+  - Compressed connection status label texts on mobile to prevent topbar overflow.
+  - Allowed cards, visualization charts, and metrics tables to stretch and wrap naturally on small screens.

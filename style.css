@@ -1633,8 +1633,9 @@ h1, h2, h3, h4, .logo-text, .metric-value, .tf-btn {
   to { opacity: 1; transform: scale(1); }
 }
 
-/* Mobile-only toggle button visibility */
-.mobile-only-btn {
+/* Mobile-only toggle button and backdrop visibility (hidden on desktop to avoid grid track occupation) */
+.mobile-only-btn,
+.sidebar-backdrop {
   display: none;
 }
 

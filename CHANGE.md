@@ -35,3 +35,7 @@ All modifications to the Crypto Futures Signal Tracker from this point forward w
   - Enabled swipeable/touch-scrolling behavior for the pair tab bar in the topbar on narrow viewports.
   - Compressed connection status label texts on mobile to prevent topbar overflow.
   - Allowed cards, visualization charts, and metrics tables to stretch and wrap naturally on small screens.
+
+### 6. Desktop Layout Restoration (Grid Alignment Fix)
+- **Problem**: On laptop/desktop viewports, the layout broke: the sidebar shifted to the center, the chart shifted to the narrow right column, and the calculator fell to the bottom. This happened because the newly added `#sidebar-backdrop` div participated in the 3-column desktop CSS Grid layout as the first child item, shifting all subsequent columns.
+- **Solution**: Set `.sidebar-backdrop` to `display: none;` on desktop viewports. Since elements with `display: none` do not participate in CSS Grid positioning, the grid items naturally fall back into their correct desktop slots (Sidebar, Main Area, and Right Panel). On mobile, `display: block` is restored on `.sidebar-backdrop` when the navigation drawer is active.

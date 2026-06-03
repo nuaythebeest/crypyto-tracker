@@ -39,3 +39,128 @@ All modifications to the Crypto Futures Signal Tracker from this point forward w
 ### 6. Desktop Layout Restoration (Grid Alignment Fix)
 - **Problem**: On laptop/desktop viewports, the layout broke: the sidebar shifted to the center, the chart shifted to the narrow right column, and the calculator fell to the bottom. This happened because the newly added `#sidebar-backdrop` div participated in the 3-column desktop CSS Grid layout as the first child item, shifting all subsequent columns.
 - **Solution**: Set `.sidebar-backdrop` to `display: none;` on desktop viewports. Since elements with `display: none` do not participate in CSS Grid positioning, the grid items naturally fall back into their correct desktop slots (Sidebar, Main Area, and Right Panel). On mobile, `display: block` is restored on `.sidebar-backdrop` when the navigation drawer is active.
+
+---
+
+## 2026-06-02 — V2 Upgrade: Supabase + Auth + Telegram + Multi-User
+
+### 7. Supabase Database Integration
+- **Problem**: All data (settings, trades, alerts) was stored in `localStorage`, making it browser-only with no cross-device sync or multi-user support.
+- **Solution**:
+  - Created `supabase/schema.sql` with 3 tables: `user_profiles`, `trades`, `alerts` — each with Row-Level Security (RLS) policies ensuring users can only access their own data.
+  - Created `api/supabase-client.js` importing `@supabase/supabase-js` from CDN (ESM) to initialize a singleton client.
+  - Created `config.example.js` (committed template) and `config.js` (gitignored) for Supabase credentials.
+  - Added `config.js` to `.gitignore`.
+
+### 8. Authentication (Login + Profile Setup)
+- **Problem**: No user authentication — anyone could access the app.
+- **Solution**:
+  - Created `ui/auth.js` with `initAuth()`, `signOut()`, and first-login profile setup flow.
+  - Updated `index.html` to add `#login-screen` and `#profile-setup-screen` sections before `#app-container`. The app container starts hidden until auth succeeds.
+  - Added a sign-out button (`#signout-btn`) to the topbar.
+  - Added premium auth screen CSS styles with glassmorphic card, entrance animation, error shake, and focus ring effects.
+  - Users are invite-only — created via the Supabase dashboard (Authentication → Invite User).
+
+### 9. Storage Layer Rewrite (localStorage → Supabase)
+- **Problem**: `storage/trade-log.js` used synchronous `localStorage` API for all CRUD.
+- **Solution**:
+  - Completely rewrote `storage/trade-log.js` — all 10 functions are now `async` and query Supabase PostgreSQL.
+  - Added camelCase ↔ snake_case field mapping between app and database schemas.
+  - Removed `saveTrades()` and `saveAlerts()` (no longer needed with per-operation persistence).
+  - Added new functions: `updateTrade()`, `markAlertsRead()`, `clearAlerts()`.
+  - All callers in `app.js` updated to `await` the now-async functions.
+
+### 10. App Controller V2 Rewrite
+- **Problem**: `app.js` initialized directly on DOMContentLoaded with no auth check, used synchronous storage calls, and had no real-time sync.
+- **Solution**:
+  - Wrapped initialization in `bootstrap()` → `initAuth()` → `initApp()` flow.
+  - All storage calls converted to `async/await`.
+  - Added `initRealtimeSync()` subscribing to Postgres changes on `trades` and `alerts` tables for cross-device sync.
+  - `triggerAlert()` now inserts structured alerts into Supabase (pair, alert_type, message, price) which triggers the Telegram webhook.
+  - Alert types: `new_signal`, `tp1`, `tp2`, `stop_loss`, `signal_expired`.
+  - Fixed existing bug: `updateTrade` was used but never imported.
+  - Removed direct `localStorage.removeItem()` call in clear-alerts handler.
+  - Added State fields: `currentUser`, `userProfile`.
+
+### 11. Settings Page — Telegram Integration
+- **Problem**: No way for users to configure Telegram notifications.
+- **Solution**:
+  - Added Telegram Chat ID field (`#setting-telegram`) to the Settings form in `index.html`.
+  - `loadSettingsForm()` and `handleSettingsSubmit()` in `app.js` now read/write the `telegram_chat_id` field.
+  - Settings save to `user_profiles` table via Supabase instead of localStorage.
+
+### 12. Telegram Edge Function
+- **Problem**: No push notifications for trading signals and alerts.
+- **Solution**:
+  - Created `supabase/functions/telegram-notify/index.ts` — a Deno Edge Function triggered by database webhook on `alerts` INSERT.
+  - For `new_signal` alerts: broadcasts to ALL users with a Telegram Chat ID configured.
+  - For personal alerts (TP hit, SL hit): sends only to the trade owner.
+  - Formatted with emoji-rich HTML messages.
+
+### Files Changed
+| Action | File |
+|---|---|
+| NEW | `config.example.js` |
+| NEW | `config.js` (gitignored) |
+| NEW | `api/supabase-client.js` |
+| NEW | `supabase/schema.sql` |
+| NEW | `supabase/functions/telegram-notify/index.ts` |
+| NEW | `ui/auth.js` |
+| MODIFIED | `.gitignore` |
+| MODIFIED | `index.html` |
+| MODIFIED | `style.css` |
+| REWRITTEN | `storage/trade-log.js` |
+| REWRITTEN | `app.js` |
+| UPDATED | `CHANGE.md` |
+
+---
+
+## 2026-06-03 — V3: Telegram Notifications + Security Hardening
+
+### 13. Direct Telegram Notifications from Browser
+- **Problem**: No push notifications when signals fire, TP/SL are hit, or daily loss limit is reached.
+- **Solution**:
+  - Created `api/telegram.js` — calls Telegram Bot API directly from browser JS using credentials from `config.js`.
+  - Added `sendTelegram()` import to `app.js` and placed it at 4 call sites:
+    1. **New signal fires** (confidence ≥ 70%) — sends full signal details (pair, direction, entry, SL, TP1-3, R:R)
+    2. **TP1 hit** — notifies to close 50% and move SL to breakeven
+    3. **Stop loss hit** — sends exit price and loss amount
+    4. **Daily loss limit reached** — warns to step away until 00:00 UTC
+  - Updated `config.example.js` with Telegram placeholder lines.
+  - Updated `config.js` with real bot token and chat ID.
+
+### 14. HTTP Basic Auth (nginx level)
+- **Problem**: Anyone who finds the Railway URL can access the app — bot tokens and trade signals exposed.
+- **Solution**:
+  - Created `nginx.conf` with `auth_basic` directive — prompts browser login before any content loads.
+  - Created `entrypoint.sh` — generates `.htpasswd` at container startup from `BASIC_AUTH_USER` and `BASIC_AUTH_PASSWORD` Railway environment variables. Falls back to no-auth if vars are missing.
+  - Replaced `Dockerfile` — installs `apache2-utils` for `htpasswd`, copies custom nginx config, and uses entrypoint script.
+  - Added `.htpasswd` to `.gitignore`.
+
+### 15. Security Headers
+- **Problem**: No protection against clickjacking, XSS, MIME sniffing, or fingerprinting.
+- **Solution**: Added 6 security headers in `nginx.conf`:
+  - `X-Frame-Options: DENY` — prevents iframe embedding
+  - `X-Content-Type-Options: nosniff` — blocks MIME sniffing
+  - `X-XSS-Protection: 1; mode=block` — legacy XSS filter
+  - `Referrer-Policy: no-referrer` — hides referer
+  - `Permissions-Policy` — disables camera/mic/geolocation
+  - `Content-Security-Policy` — restricts scripts/styles/fonts to known CDNs only
+
+### Files Changed
+| Action | File |
+|---|---|
+| NEW | `api/telegram.js` |
+| NEW | `nginx.conf` |
+| NEW | `entrypoint.sh` |
+| REPLACED | `Dockerfile` |
+| MODIFIED | `config.example.js` |
+| MODIFIED | `config.js` |
+| MODIFIED | `.gitignore` |
+| MODIFIED | `app.js` (4 sendTelegram call sites + import) |
+| UPDATED | `CHANGE.md` |
+
+### After Push — Railway Setup Required
+Set these in Railway → Variables:
+- `BASIC_AUTH_USER` — your chosen username
+- `BASIC_AUTH_PASSWORD` — strong password (min 12 chars)

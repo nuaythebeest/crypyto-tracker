@@ -1,16 +1,19 @@
 /**
  * Main Application Controller — State Machine & Coordinator
+ * V2: Supabase Auth + Real-time Sync + Telegram Alerts
  */
 
 import { 
   loadSettings, 
   saveSettings, 
   loadTrades, 
-  saveTrades, 
   logTrade, 
+  updateTrade,
   loadAlerts, 
   addAlert, 
-  clearTradeLog 
+  clearTradeLog,
+  markAlertsRead,
+  clearAlerts
 } from './storage/trade-log.js';
 
 import { 
@@ -24,6 +27,8 @@ import {
 } from './api/binance-rest.js';
 
 import { initWebSocket, closeWebSocket } from './api/binance-ws.js';
+import { supabase } from './api/supabase-client.js';
+import { initAuth, signOut } from './ui/auth.js';
 import { calculateEMA, calculateBollingerBands } from './engine/indicators.js';
 import { analyzeMarket } from './engine/signal-engine.js';
 import { initChart, updateChartData, drawSignalOverlays, clearSignalOverlays } from './ui/chart.js';
@@ -34,6 +39,7 @@ import { renderTradeLogTable, initExportCSV } from './ui/trade-log-ui.js';
 import { renderBacktestStats } from './ui/backtest-ui.js';
 import { renderAlertsFeed, renderAlertsPopover, updateAlertBadge, playAlertSound } from './ui/alerts-ui.js';
 import { checkCorrelation, isDailyLossLimitReached } from './risk/position-sizing.js';
+import { sendTelegram } from './api/telegram.js';
 
 // Application State
 const State = {
@@ -47,7 +53,9 @@ const State = {
   allAnalysis: {},       // cache of analysis per pair: { BTCUSDT: analysisObj }
   activePage: 'dashboard',
   suppressSignals: false,
-  unreadAlertsCount: 0
+  unreadAlertsCount: 0,
+  currentUser: null,     // Supabase auth user object
+  userProfile: null       // user_profiles row
 };
 
 // DOM references
@@ -90,8 +98,8 @@ function navigateTo(pageId) {
   // Refresh page specific views
   if (pageId === 'tradelog') {
     renderTradeLogTable(State.trades, {
-      onExitConfirm: () => {
-        State.trades = loadTrades();
+      onExitConfirm: async () => {
+        State.trades = await loadTrades();
         checkDailyLossLimit();
         renderTradeLogTable(State.trades, { onExitConfirm: () => refreshState(), onReload: refreshState });
       },
@@ -108,30 +116,51 @@ function navigateTo(pageId) {
  * Check and apply daily loss limit suppressions
  */
 function checkDailyLossLimit() {
+  const wasBlocked = State.suppressSignals;
   const isBlocked = isDailyLossLimitReached(State.trades, State.settings.dailyLossLimit);
   State.suppressSignals = isBlocked;
   
   if (isBlocked && lossLimitBanner) {
     lossLimitBanner.classList.remove('hidden');
+    // Send Telegram only on the transition to blocked (not on every check)
+    if (!wasBlocked) {
+      sendTelegram(
+        `⛔ <b>DAILY LOSS LIMIT REACHED</b>\n` +
+        `2 consecutive losses today.\n` +
+        `No new signals until 00:00 UTC.\n` +
+        `Protect your capital. Step away and review.`
+      );
+    }
   } else if (lossLimitBanner) {
     lossLimitBanner.classList.add('hidden');
   }
 }
 
 /**
- * Handle new alert creation
+ * Handle new alert creation — inserts into Supabase (triggers Telegram webhook)
  * @param {string} text 
  * @param {string} type - 'bullish' | 'bearish' | 'warning' | 'info'
+ * @param {Object} [extra] - optional { pair, alert_type, price } for structured Supabase alerts
  */
-function triggerAlert(text, type = 'info') {
-  const alert = {
+async function triggerAlert(text, type = 'info', extra = {}) {
+  const alertObj = {
+    text,
+    type,
+    pair: extra.pair || State.activePair || 'SYSTEM',
+    alert_type: extra.alert_type || type,
+    message: extra.message || text,
+    price: extra.price || null
+  };
+  
+  await addAlert(alertObj);
+
+  // Update local state
+  State.alerts.unshift({
     id: crypto.randomUUID(),
     text,
     type,
     createdAt: Date.now()
-  };
-  
-  State.alerts = addAlert(alert);
+  });
   State.unreadAlertsCount++;
   
   renderAlertsFeed(State.alerts);
@@ -167,8 +196,29 @@ async function runAnalysisForPair(symbol) {
       // Avoid duplicate alert alerts
       const exists = State.trades.some(t => t.id === analysis.signal.id);
       if (!exists && !State.suppressSignals) {
-        triggerAlert(`New AI Signal: ${symbol} ${analysis.signal.direction} (${analysis.signal.confidence}% Confidence)`, analysis.signal.direction === 'LONG' ? 'bullish' : 'bearish');
+        await triggerAlert(
+          `New AI Signal: ${symbol} ${analysis.signal.direction} (${analysis.signal.confidence}% Confidence)`,
+          analysis.signal.direction === 'LONG' ? 'bullish' : 'bearish',
+          {
+            pair: symbol,
+            alert_type: 'new_signal',
+            message: `${analysis.signal.direction} signal on ${symbol}\nConfidence: ${analysis.signal.confidence}% | Entry: $${analysis.signal.entryPrice.toFixed(2)}\nSL: $${analysis.signal.stopLoss.toFixed(2)} | TP1: $${analysis.signal.tp1.toFixed(2)} | TP2: $${analysis.signal.tp2.toFixed(2)}\nR:R 1:3.0 | Expires in 3H`,
+            price: analysis.signal.entryPrice
+          }
+        );
         playAlertSound();
+
+        // V3: Send Telegram notification for new signal
+        sendTelegram(
+          `📡 <b>NEW SIGNAL — ${symbol} ${analysis.signal.direction}</b>\n` +
+          `Confidence: ${analysis.signal.confidence}%\n` +
+          `Entry: $${analysis.signal.entryPrice.toFixed(2)}\n` +
+          `SL: $${analysis.signal.stopLoss.toFixed(2)} (-${(analysis.signal.slDistancePct || 0).toFixed(1)}%)\n` +
+          `TP1: $${analysis.signal.tp1.toFixed(2)} (+${(analysis.signal.tp1Pct || 0).toFixed(1)}%)\n` +
+          `TP2: $${analysis.signal.tp2.toFixed(2)} (+${(analysis.signal.tp2Pct || 0).toFixed(1)}%)\n` +
+          `TP3: $${analysis.signal.tp3.toFixed(2)} (+${(analysis.signal.tp3Pct || 0).toFixed(1)}%)\n` +
+          `R:R 1:3.0 | Expires in 3H`
+        );
       }
     }
 
@@ -291,16 +341,15 @@ async function refreshActivePair() {
 /**
  * Handle Calculator inputs updating settings on the fly
  */
-function handleCalculatorSettingsUpdate(updatedSettings) {
+async function handleCalculatorSettingsUpdate(updatedSettings) {
   State.settings = { ...State.settings, ...updatedSettings };
-  saveSettings(State.settings);
+  await saveSettings(State.settings);
 }
 
 /**
  * Skip signal handler
  */
-function handleSkipSignal(signal) {
-  // Log trade as skipped in localStorage
+async function handleSkipSignal(signal) {
   const skippedTrade = {
     ...signal,
     status: 'skipped',
@@ -310,9 +359,13 @@ function handleSkipSignal(signal) {
     notes: 'Manually skipped by user.'
   };
 
-  logTrade(skippedTrade);
-  State.trades = loadTrades();
-  triggerAlert(`Signal ${signal.pair} ${signal.direction} skipped.`, 'info');
+  await logTrade(skippedTrade);
+  State.trades = await loadTrades();
+  await triggerAlert(`Signal ${signal.pair} ${signal.direction} skipped.`, 'info', {
+    pair: signal.pair,
+    alert_type: 'signal_expired',
+    message: `Signal ${signal.pair} ${signal.direction} skipped by user.`
+  });
   refreshActivePair();
 }
 
@@ -364,7 +417,7 @@ function openTakeTradeModal(signal) {
     cleanup();
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
 
     const finalLeverage = parseInt(selectLev.value);
@@ -388,10 +441,14 @@ function openTakeTradeModal(signal) {
       signalTime: Date.now()
     };
 
-    logTrade(newTrade);
-    State.trades = loadTrades();
+    await logTrade(newTrade);
+    State.trades = await loadTrades();
     
-    triggerAlert(`Trade Taken: ${signal.pair} ${signal.direction} at $${signal.entryPrice}`, 'info');
+    await triggerAlert(`Trade Taken: ${signal.pair} ${signal.direction} at $${signal.entryPrice}`, 'info', {
+      pair: signal.pair,
+      alert_type: 'new_signal',
+      message: `Trade taken: ${signal.pair} ${signal.direction}\nEntry: $${signal.entryPrice.toFixed(2)} | Leverage: ${finalLeverage}x\nMargin: $${margin.toFixed(2)} USDT`
+    });
     
     dialog.close();
     cleanup();
@@ -430,38 +487,71 @@ function handleWebSocketPriceUpdate(pair, price, changePct, volume) {
 /**
  * Check live price updates against taken/active trades to alert users
  */
-function checkLivePriceAlerts(pair, price) {
+async function checkLivePriceAlerts(pair, price) {
   // Check active signals or open taken trades
   const openTrades = State.trades.filter(t => t.status === 'taken' && !t.result && t.pair === pair);
   
-  openTrades.forEach(trade => {
+  for (const trade of openTrades) {
     const isLong = trade.direction === 'LONG';
     
     // Stop Loss hit check
     if (isLong ? (price <= trade.stopLoss) : (price >= trade.stopLoss)) {
-      triggerAlert(`⛔ STOP LOSS HIT for ${pair} ${trade.direction} at $${price.toLocaleString()}`, 'warning');
+      const pnl = parseFloat((isLong ? (trade.stopLoss - trade.entryPrice) : (trade.entryPrice - trade.stopLoss)) * trade.positionSize);
+      
+      await triggerAlert(`⛔ STOP LOSS HIT for ${pair} ${trade.direction} at $${price.toLocaleString()}`, 'warning', {
+        pair: trade.pair,
+        alert_type: 'stop_loss',
+        message: `Stop loss hit on ${trade.pair} ${trade.direction}\nExit at $${price.toFixed(2)}\nLoss: -$${Math.abs(pnl).toFixed(2)} USDT`,
+        price: price
+      });
       playAlertSound();
+
+      // V3: Send Telegram notification for stop loss
+      sendTelegram(
+        `🛑 <b>STOP LOSS HIT — ${trade.pair} ${trade.direction}</b>\n` +
+        `Exit at $${price.toFixed(2)}\n` +
+        `Loss: -$${Math.abs(pnl).toFixed(2)} USDT`
+      );
+      
       // Auto-exit trade in logs
       const updates = {
         result: 'loss',
         exitPrice: trade.stopLoss,
-        pnlUSDT: parseFloat((isLong ? (trade.stopLoss - trade.entryPrice) : (trade.entryPrice - trade.stopLoss)) * trade.positionSize),
+        pnlUSDT: pnl,
         notes: 'Auto-closed: Stop Loss hit.'
       };
-      updateTrade(trade.id, updates);
-      State.trades = loadTrades();
+      await updateTrade(trade.id, updates);
+      State.trades = await loadTrades();
       checkDailyLossLimit();
     }
     
     // TP targets hit checks
     if (isLong ? (price >= trade.tp1) : (price <= trade.tp1)) {
-      triggerAlert(`🎯 TAKE PROFIT 1 HIT for ${pair} ${trade.direction} at $${price.toLocaleString()}`, 'bullish');
+      await triggerAlert(`🎯 TAKE PROFIT 1 HIT for ${pair} ${trade.direction} at $${price.toLocaleString()}`, 'bullish', {
+        pair: trade.pair,
+        alert_type: 'tp1',
+        message: `TP1 hit on ${trade.pair} ${trade.direction} ✅\nPrice reached $${price.toFixed(2)}\nAction: Close 50% now. Move SL to breakeven.`,
+        price: price
+      });
       playAlertSound();
+
+      // V3: Send Telegram notification for TP1
+      sendTelegram(
+        `🎯 <b>TP1 HIT — ${trade.pair} ${trade.direction}</b>\n` +
+        `Price reached $${price.toFixed(2)}\n` +
+        `Action: Close 50% of position now.\n` +
+        `Move Stop Loss to breakeven (entry price) ✅`
+      );
     }
     if (isLong ? (price >= trade.tp2) : (price <= trade.tp2)) {
-      triggerAlert(`🎯 TAKE PROFIT 2 HIT for ${pair} ${trade.direction} at $${price.toLocaleString()}`, 'bullish');
+      await triggerAlert(`🎯 TAKE PROFIT 2 HIT for ${pair} ${trade.direction} at $${price.toLocaleString()}`, 'bullish', {
+        pair: trade.pair,
+        alert_type: 'tp2',
+        message: `TP2 hit on ${trade.pair} ${trade.direction} 🎯🎯\nPrice reached $${price.toFixed(2)}\nAction: Close 30% position. Trail SL to TP1.`,
+        price: price
+      });
     }
-  });
+  }
 }
 
 /**
@@ -486,6 +576,12 @@ function loadSettingsForm() {
   form.querySelector('#setting-leverage').value = State.settings.defaultLeverage;
   form.querySelector('#setting-loss-limit').value = State.settings.dailyLossLimit;
 
+  // Telegram Chat ID
+  const telegramInput = form.querySelector('#setting-telegram');
+  if (telegramInput) {
+    telegramInput.value = State.settings.telegramChatId || '';
+  }
+
   // Set active pair checkboxes
   const checkboxes = form.querySelectorAll('input[name="active-pairs"]');
   checkboxes.forEach(box => {
@@ -496,7 +592,7 @@ function loadSettingsForm() {
 /**
  * Save settings from settings view inputs
  */
-function handleSettingsSubmit(e) {
+async function handleSettingsSubmit(e) {
   e.preventDefault();
   
   const form = e.target;
@@ -504,6 +600,7 @@ function handleSettingsSubmit(e) {
   const riskPercent = parseFloat(form.querySelector('#setting-risk-pct').value);
   const defaultLeverage = parseInt(form.querySelector('#setting-leverage').value);
   const dailyLossLimit = parseInt(form.querySelector('#setting-loss-limit').value);
+  const telegramChatId = form.querySelector('#setting-telegram')?.value.trim() || null;
 
   // Collect active pairs
   const pairs = [];
@@ -522,15 +619,16 @@ function handleSettingsSubmit(e) {
     riskPercent,
     defaultLeverage,
     dailyLossLimit,
+    telegramChatId,
     pairs
   };
 
-  saveSettings(State.settings);
+  await saveSettings(State.settings);
   
   // Reinitialize websocket if active pairs changed
   initWebSocket(State.settings.pairs, handleWebSocketPriceUpdate, refreshActivePair, setConnectionStatus);
   
-  triggerAlert('Settings saved successfully.', 'info');
+  await triggerAlert('Settings saved successfully.', 'info');
   navigateTo('dashboard');
   refreshActivePair();
 }
@@ -538,12 +636,12 @@ function handleSettingsSubmit(e) {
 /**
  * Reset trade log logs
  */
-function handleResetTradeLog() {
+async function handleResetTradeLog() {
   if (confirm('Are you sure you want to delete ALL logged trades? This cannot be undone.')) {
-    clearTradeLog();
+    await clearTradeLog();
     State.trades = [];
     checkDailyLossLimit();
-    triggerAlert('Trade log history reset.', 'warning');
+    await triggerAlert('Trade log history reset.', 'warning');
     navigateTo('dashboard');
     refreshActivePair();
   }
@@ -552,10 +650,59 @@ function handleResetTradeLog() {
 /**
  * Global state refresh (without reloading UI tabs)
  */
-function refreshState() {
-  State.trades = loadTrades();
+async function refreshState() {
+  State.trades = await loadTrades();
   checkDailyLossLimit();
   navigateTo(State.activePage);
+}
+
+/**
+ * Initialize real-time sync via Supabase Postgres Changes
+ * Keeps trade log and alerts in sync across all devices
+ */
+function initRealtimeSync() {
+  // Trades channel — syncs trade log across all devices
+  supabase
+    .channel('trades-sync')
+    .on('postgres_changes',
+      { event: '*', schema: 'public', table: 'trades' },
+      async (payload) => {
+        // Reload trade log UI when any change happens (insert, update, delete)
+        State.trades = await loadTrades();
+        renderTradeLogTable(State.trades, {
+          onExitConfirm: () => refreshState(),
+          onReload: refreshState
+        });
+        renderBacktestStats(State.trades);
+      }
+    )
+    .subscribe();
+
+  // Alerts channel — syncs alerts across all devices
+  supabase
+    .channel('alerts-sync')
+    .on('postgres_changes',
+      { event: 'INSERT', schema: 'public', table: 'alerts' },
+      (payload) => {
+        const row = payload.new;
+        const alertItem = {
+          id: row.id,
+          text: row.message,
+          type: row.alert_type,
+          createdAt: new Date(row.created_at).getTime()
+        };
+        // Only add if not already in local state (prevent duplicates from own inserts)
+        if (!State.alerts.some(a => a.id === alertItem.id)) {
+          State.alerts.unshift(alertItem);
+          State.unreadAlertsCount++;
+          renderAlertsFeed(State.alerts);
+          renderAlertsPopover(State.alerts);
+          updateAlertBadge(State.unreadAlertsCount);
+          playAlertSound();
+        }
+      }
+    )
+    .subscribe();
 }
 
 /**
@@ -650,22 +797,15 @@ async function refreshOnChainPulse() {
 }
 
 /**
- * Bootstrap Initialization
+ * Main App Initialization (called after auth succeeds)
  */
-async function init() {
-  console.log('Bootstrapping Crypto Futures Signal Tracker...');
-  toggleLoading(true);
+async function initApp() {
+  console.log(`Welcome, ${State.userProfile?.display_name || 'Trader'}! Initializing app...`);
   
   try {
-    // 1. Load data
-    State.settings = loadSettings();
-    State.trades = loadTrades();
-    State.alerts = loadAlerts();
-    State.unreadAlertsCount = State.alerts.length;
-
     checkDailyLossLimit();
 
-    // 2. Initialize Navigation and Route listeners
+    // 1. Initialize Navigation and Route listeners
     navItems.forEach(item => {
       item.addEventListener('click', (e) => {
         navigateTo(e.currentTarget.dataset.page);
@@ -693,10 +833,16 @@ async function init() {
       navigateTo('settings');
       document.body.classList.remove('sidebar-open');
     });
+
+    // Sign-out button
+    const signoutBtn = document.getElementById('signout-btn');
+    if (signoutBtn) {
+      signoutBtn.addEventListener('click', () => signOut());
+    }
     
     // Alerts Bell drop down clear button
-    document.getElementById('clear-alerts-btn').addEventListener('click', () => {
-      localStorage.removeItem('crypto_signal_tracker_alerts');
+    document.getElementById('clear-alerts-btn').addEventListener('click', async () => {
+      await clearAlerts();
       State.alerts = [];
       State.unreadAlertsCount = 0;
       renderAlertsFeed(State.alerts);
@@ -704,10 +850,11 @@ async function init() {
       updateAlertBadge(0);
     });
 
-    // Alerts Bell badge click to clear badge count
-    alertBellBtn.addEventListener('click', () => {
+    // Alerts Bell badge click to mark as read
+    alertBellBtn.addEventListener('click', async () => {
       State.unreadAlertsCount = 0;
       updateAlertBadge(0);
+      await markAlertsRead();
     });
 
     // Forms binding
@@ -725,19 +872,18 @@ async function init() {
     // Load paper trade mode checkbox
     const paperCheckbox = document.getElementById('paper-mode-checkbox');
     paperCheckbox.checked = State.settings.paperMode;
-    paperCheckbox.addEventListener('change', (e) => {
+    paperCheckbox.addEventListener('change', async (e) => {
       State.settings.paperMode = e.target.checked;
-      saveSettings(State.settings);
-      triggerAlert(`Paper trading mode globally ${e.target.checked ? 'ENABLED' : 'DISABLED'}.`, 'info');
+      await triggerAlert(`Paper trading mode globally ${e.target.checked ? 'ENABLED' : 'DISABLED'}.`, 'info');
     });
 
-    // 3. Initialize TradingView Chart
+    // 2. Initialize TradingView Chart
     if (typeof LightweightCharts === 'undefined') {
       throw new Error('TradingView Lightweight Charts library failed to load. Please check your internet connection.');
     }
     initChart('chart-container');
 
-    // 4. Timeframe buttons binding
+    // 3. Timeframe buttons binding
     const tfButtons = document.querySelectorAll('.tf-btn');
     tfButtons.forEach(btn => {
       btn.addEventListener('click', (e) => {
@@ -753,7 +899,7 @@ async function init() {
     renderAlertsPopover(State.alerts);
     updateAlertBadge(State.unreadAlertsCount);
 
-    // 5. Fetch Initial market prices to render sidebar watchlist and topbar pair tabs immediately
+    // 4. Fetch Initial market prices to render sidebar watchlist and topbar pair tabs immediately
     const defaultTickers = {};
     for (const pair of State.settings.pairs) {
       const tick = await fetchTicker24h(pair);
@@ -779,8 +925,11 @@ async function init() {
     // Run initial on-chain pulse render
     await refreshOnChainPulse();
 
-    // 6. Connect Live WS Streams
+    // 5. Connect Live WS Streams
     initWebSocket(State.settings.pairs, handleWebSocketPriceUpdate, refreshActivePair, setConnectionStatus);
+
+    // 6. Initialize real-time Supabase sync
+    initRealtimeSync();
 
     // 7. Background timers setup
     // 60-second timer for Fear & Greed + global stats + signal expiry check
@@ -796,7 +945,11 @@ async function init() {
       if (State.activeAnalysis && State.activeAnalysis.signal) {
         const sig = State.activeAnalysis.signal;
         if (Date.now() >= sig.expiresAt && sig.status === 'active') {
-          triggerAlert(`Signal ${sig.pair} ${sig.direction} expired without entry fill.`, 'warning');
+          await triggerAlert(`Signal ${sig.pair} ${sig.direction} expired without entry fill.`, 'warning', {
+            pair: sig.pair,
+            alert_type: 'signal_expired',
+            message: `Signal expired: ${sig.pair} ${sig.direction}\nNo entry fill within 3-hour window.`
+          });
           refreshActivePair();
         }
       }
@@ -808,8 +961,7 @@ async function init() {
     }, 5 * 60 * 1000);
 
   } catch (error) {
-    console.error('Error during bootstrapping initialization:', error);
-    // Add alert to feed so user sees the details in-app
+    console.error('Error during app initialization:', error);
     setTimeout(() => {
       triggerAlert(`Initialization Error: ${error.message}`, 'warning');
     }, 1000);
@@ -818,5 +970,41 @@ async function init() {
   }
 }
 
+/**
+ * Bootstrap — Auth-first initialization
+ */
+async function bootstrap() {
+  console.log('Bootstrapping Crypto Futures Signal Tracker V2...');
+  toggleLoading(true);
+
+  try {
+    await initAuth(async (user, profile) => {
+      // User is authenticated and has a profile
+      State.currentUser = user;
+      State.userProfile = profile;
+
+      // Load settings from Supabase profile
+      State.settings = await loadSettings();
+
+      // Override with profile data where available
+      if (profile.account_size) State.settings.accountSize = parseFloat(profile.account_size);
+      if (profile.risk_percent) State.settings.riskPercent = parseFloat(profile.risk_percent);
+      if (profile.default_leverage) State.settings.defaultLeverage = profile.default_leverage;
+      if (profile.telegram_chat_id) State.settings.telegramChatId = profile.telegram_chat_id;
+
+      // Load trades and alerts from Supabase
+      State.trades = await loadTrades();
+      State.alerts = await loadAlerts();
+      State.unreadAlertsCount = State.alerts.filter(a => !a.isRead).length;
+
+      // Continue with normal app initialization
+      await initApp();
+    });
+  } catch (error) {
+    console.error('Bootstrap error:', error);
+    toggleLoading(false);
+  }
+}
+
 // Start Application!
-window.addEventListener('DOMContentLoaded', init);
+window.addEventListener('DOMContentLoaded', bootstrap);

@@ -216,3 +216,29 @@ Set these in Railway → Variables:
 1. **Regenerate Telegram bot token** via BotFather (old token is in git history)
 2. **Set Railway env vars**: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
 3. **Fix Chrome**: visit `https://your-railway-url/logout`, then reload the app
+
+---
+
+## 2026-06-03 — Telegram Test Button + Silent Alert Refactor
+
+### 21. Telegram Test Button in Settings
+- **Problem**: No way to verify Telegram credentials are working without waiting for a real signal to fire.
+- **Solution**:
+  - Added "Send Test Message" button to Settings page (`index.html`) with inline status feedback.
+  - Button calls `sendTelegram()` directly — shows `✓ Sent!` on success or `✗ Failed: <reason>` on error (e.g. wrong token, invalid chat ID).
+  - Status message uses `--color-bullish` / `--color-bearish` CSS variables for visual clarity.
+
+### 22. Telegram Silent vs Throwing Split (`api/telegram.js`)
+- **Problem**: `sendTelegram` swallowed all errors silently — test button would show success even when credentials were wrong or API returned an error. Also, a Telegram failure in the signal engine would crash unrelated logic if errors were not caught.
+- **Solution**:
+  - `sendTelegram(message)` — now throws `Error` with Telegram API error description on failure. Used by test button so errors surface to UI.
+  - `sendTelegramSilent(message)` — wraps `sendTelegram`, catches and logs errors. Used by all 4 fire-and-forget alert sites (new signal, SL hit, TP1 hit, daily loss limit) so a Telegram failure never interrupts the trading engine.
+  - Updated all 4 call sites in `app.js` to use `sendTelegramSilent`.
+
+### Files Changed
+| Action | File |
+|---|---|
+| MODIFIED | `index.html` (Test Telegram button in Settings) |
+| MODIFIED | `api/telegram.js` (split into sendTelegram + sendTelegramSilent) |
+| MODIFIED | `app.js` (import sendTelegramSilent, swap 4 call sites, wire test button) |
+| UPDATED | `CHANGE.md` |

@@ -35,7 +35,7 @@ import { renderTradeLogTable, initExportCSV } from './ui/trade-log-ui.js';
 import { renderBacktestStats } from './ui/backtest-ui.js';
 import { renderAlertsFeed, renderAlertsPopover, updateAlertBadge, playAlertSound } from './ui/alerts-ui.js';
 import { checkCorrelation, isDailyLossLimitReached } from './risk/position-sizing.js';
-import { sendTelegram } from './api/telegram.js';
+import { sendTelegram, sendTelegramSilent } from './api/telegram.js';
 
 // Application State
 const State = {
@@ -118,7 +118,7 @@ function checkDailyLossLimit() {
     lossLimitBanner.classList.remove('hidden');
     // Send Telegram only on the transition to blocked (not on every check)
     if (!wasBlocked) {
-      sendTelegram(
+      sendTelegramSilent(
         `⛔ <b>DAILY LOSS LIMIT REACHED</b>\n` +
         `2 consecutive losses today.\n` +
         `No new signals until 00:00 UTC.\n` +
@@ -183,7 +183,7 @@ async function runAnalysisForPair(symbol) {
         playAlertSound();
 
         // V3: Send Telegram notification for new signal
-        sendTelegram(
+        sendTelegramSilent(
           `📡 <b>NEW SIGNAL — ${symbol} ${analysis.signal.direction}</b>\n` +
           `Confidence: ${analysis.signal.confidence}%\n` +
           `Entry: $${analysis.signal.entryPrice.toFixed(2)}\n` +
@@ -468,7 +468,7 @@ function checkLivePriceAlerts(pair, price) {
 
       // V3: Send Telegram notification for stop loss
       const pnl = parseFloat((isLong ? (trade.stopLoss - trade.entryPrice) : (trade.entryPrice - trade.stopLoss)) * trade.positionSize);
-      sendTelegram(
+      sendTelegramSilent(
         `🛑 <b>STOP LOSS HIT — ${trade.pair} ${trade.direction}</b>\n` +
         `Exit at $${price.toFixed(2)}\n` +
         `Loss: -$${Math.abs(pnl).toFixed(2)} USDT`
@@ -492,7 +492,7 @@ function checkLivePriceAlerts(pair, price) {
       playAlertSound();
 
       // V3: Send Telegram notification for TP1
-      sendTelegram(
+      sendTelegramSilent(
         `🎯 <b>TP1 HIT — ${trade.pair} ${trade.direction}</b>\n` +
         `Price reached $${price.toFixed(2)}\n` +
         `Action: Close 50% of position now.\n` +
@@ -754,6 +754,29 @@ async function init() {
     // Forms binding
     document.getElementById('settings-form').addEventListener('submit', handleSettingsSubmit);
     document.getElementById('reset-log-btn').addEventListener('click', handleResetTradeLog);
+
+    // Telegram test button
+    document.getElementById('test-telegram-btn').addEventListener('click', async () => {
+      const statusEl = document.getElementById('telegram-test-status');
+      const btn = document.getElementById('test-telegram-btn');
+      btn.disabled = true;
+      statusEl.style.color = '';
+      statusEl.textContent = 'Sending…';
+      try {
+        await sendTelegram(
+          `✅ <b>Telegram Test — CryptoSignal</b>\n` +
+          `Connection confirmed.\n` +
+          `Time: ${new Date().toUTCString()}`
+        );
+        statusEl.style.color = 'var(--color-bullish)';
+        statusEl.textContent = '✓ Sent! Check your Telegram.';
+      } catch (e) {
+        statusEl.style.color = 'var(--color-bearish)';
+        statusEl.textContent = '✗ Failed: ' + e.message;
+      } finally {
+        btn.disabled = false;
+      }
+    });
     
     // Dismiss loss limit overlay button
     document.getElementById('dismiss-loss-banner-btn').addEventListener('click', () => {

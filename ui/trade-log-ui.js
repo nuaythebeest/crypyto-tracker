@@ -124,7 +124,7 @@ function openExitTradeModal(trade, onConfirm) {
     cleanup();
   };
 
-  const handleSubmit = async (e) => {
+  const handleSubmit = (e) => {
     e.preventDefault();
 
     const result = document.getElementById('exit-modal-result').value;
@@ -163,7 +163,7 @@ function openExitTradeModal(trade, onConfirm) {
       status: 'taken' // keep taken status
     };
 
-    await updateTrade(activeExitTradeId, updates);
+    updateTrade(activeExitTradeId, updates);
     
     dialog.close();
     cleanup();
@@ -186,8 +186,8 @@ export function initExportCSV(btnId) {
   const btn = document.getElementById(btnId);
   if (!btn) return;
 
-  btn.addEventListener('click', async () => {
-    const trades = await loadTrades();
+  btn.addEventListener('click', () => {
+    const trades = loadTrades();
     if (trades.length === 0) {
       alert('No trades available to export.');
       return;

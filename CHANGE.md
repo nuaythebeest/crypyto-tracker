@@ -164,3 +164,11 @@ All modifications to the Crypto Futures Signal Tracker from this point forward w
 Set these in Railway → Variables:
 - `BASIC_AUTH_USER` — your chosen username
 - `BASIC_AUTH_PASSWORD` — strong password (min 12 chars)
+
+### 16. V2 Revert — Blank Page Fix
+- **Problem**: V2 Supabase code (auth, realtime sync, Supabase-backed storage) was layered into the app, but V3 instructions explicitly specified "No backend, no database, no Supabase." The Supabase auth flow hid all screens on failure (CSP blocked connections + placeholder credentials), causing a blank page on Railway.
+- **Solution**:
+  - Restored `app.js`, `storage/trade-log.js`, `index.html`, `style.css`, and `ui/trade-log-ui.js` to their pre-V2 state (localStorage-based, no auth).
+  - Re-applied only V3 changes: `sendTelegram` import + 4 call sites.
+  - Removed V2-only files: `api/supabase-client.js`, `ui/auth.js`, `supabase/` directory.
+  - Kept V3 files: `api/telegram.js`, `nginx.conf`, `entrypoint.sh`, updated `Dockerfile`.

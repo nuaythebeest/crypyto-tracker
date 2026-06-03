@@ -172,3 +172,47 @@ Set these in Railway → Variables:
   - Re-applied only V3 changes: `sendTelegram` import + 4 call sites.
   - Removed V2-only files: `api/supabase-client.js`, `ui/auth.js`, `supabase/` directory.
   - Kept V3 files: `api/telegram.js`, `nginx.conf`, `entrypoint.sh`, updated `Dockerfile`.
+
+---
+
+## 2026-06-03 — Bug Fixes: Token Security, Telegram, Chrome Session
+
+### 17. Telegram Bot Token — Remove from Git (Security Fix)
+- **Problem**: Real Telegram bot token and chat ID were committed in `config.js` (commit 15f88e2), triggering a GitHub secret scanning warning. The token was exposed in git history.
+- **Solution**:
+  - Replaced real credentials in `config.js` with placeholder values. The file is now safe to track.
+  - `entrypoint.sh` already generates `config.js` at container startup from Railway environment variables — this is the correct secure flow.
+  - **Action required**: Regenerate your Telegram bot token via BotFather (`/revoke` then create new token) since the old token is in git history. Set the new token in Railway → Variables → `TELEGRAM_BOT_TOKEN`.
+
+### 18. Telegram Alerts — Missing `updateTrade` Import (Code Bug Fix)
+- **Problem**: `updateTrade` was called in `checkLivePriceAlerts()` (`app.js:483`) when auto-closing a stop-loss trade, but was never imported from `storage/trade-log.js`. This caused a `ReferenceError` crash every time a stop-loss was hit, leaving the trade stuck as "open" in localStorage and potentially spamming the SL alert on every price tick.
+- **Solution**: Added `updateTrade` to the import statement in `app.js`.
+- **Note**: The `sendTelegram()` call for SL notification runs before `updateTrade`, so Telegram messages were being sent. The crash happened after the Telegram send — resulting in duplicate SL alerts until the app was reloaded.
+
+### 19. Telegram Alerts — Railway Environment Variables Required
+- **Problem**: When deployed to Railway, `entrypoint.sh` generates `config.js` from `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` environment variables. If these are not set, the generated config has empty strings and `sendTelegram()` silently bails out.
+- **Solution**: No code change needed — architecture is correct. Set these in Railway → Variables:
+  - `TELEGRAM_BOT_TOKEN` — your new bot token from BotFather
+  - `TELEGRAM_CHAT_ID` — your Telegram user or group chat ID
+  - Get your chat ID: message `@userinfobot` on Telegram, or start your bot and call `https://api.telegram.org/bot<TOKEN>/getUpdates`
+
+### 20. Chrome Session — Stale Cache + CSP Malformed Header Fix
+- **Problem 1 (Cache)**: Chrome cached the V2 blank-page version of the app (deployed 2026-06-02). Subsequent visits in regular Chrome loaded the broken cached version. Incognito has no cache, so it loaded the correct V3 app.
+- **Problem 2 (CSP)**: The `Content-Security-Policy` header in `nginx.conf` spanned multiple lines with embedded newlines — this produces a malformed HTTP header. Chrome may reject or truncate it, potentially blocking scripts from loading.
+- **Solution**:
+  - Added `Cache-Control: no-cache, must-revalidate` header in `nginx.conf` — forces browsers to revalidate app files on every load instead of serving stale cached versions.
+  - Flattened the `Content-Security-Policy` header to a single line to produce a valid HTTP header.
+  - Added `/logout` endpoint in `nginx.conf` — visit `https://your-railway-url/logout` to force Chrome to forget its cached Basic Auth credentials and re-prompt for login.
+
+### Files Changed
+| Action | File |
+|---|---|
+| MODIFIED | `config.js` (placeholder credentials — real token removed) |
+| MODIFIED | `app.js` (added `updateTrade` to imports) |
+| MODIFIED | `nginx.conf` (Cache-Control header, flattened CSP, /logout endpoint) |
+| UPDATED | `CHANGE.md` |
+
+### After Push — Action Required
+1. **Regenerate Telegram bot token** via BotFather (old token is in git history)
+2. **Set Railway env vars**: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
+3. **Fix Chrome**: visit `https://your-railway-url/logout`, then reload the app

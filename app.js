@@ -2,15 +2,16 @@
  * Main Application Controller — State Machine & Coordinator
  */
 
-import { 
-  loadSettings, 
-  saveSettings, 
-  loadTrades, 
-  saveTrades, 
-  logTrade, 
-  loadAlerts, 
-  addAlert, 
-  clearTradeLog 
+import {
+  loadSettings,
+  saveSettings,
+  loadTrades,
+  saveTrades,
+  logTrade,
+  updateTrade,
+  loadAlerts,
+  addAlert,
+  clearTradeLog
 } from './storage/trade-log.js';
 
 import { 

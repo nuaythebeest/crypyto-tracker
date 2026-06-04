@@ -8,75 +8,110 @@
  * @param {Array<Object>} trades - List of all logged trades
  */
 export function renderBacktestStats(trades) {
-  // Filter for closed trades (trades with a result logged)
-  const closedTrades = trades.filter(t => t.result !== null && t.status !== 'skipped');
-  
+  // All signals fired (everything except 'active' status edge cases)
+  const allSignals = trades.filter(t => t.status !== 'active');
+  const takenTrades = trades.filter(t => t.status === 'taken');
+  const closedTrades = takenTrades.filter(t => t.result !== null);
+
   // 1. Calculate Metric Cards
-  const totalClosed = closedTrades.length;
+  const totalTaken = takenTrades.length;
+  const totalSignals = allSignals.length;
   let winRate = 0;
   let avgRR = 0;
   let totalPnL = 0;
 
-  if (totalClosed > 0) {
-    const wins = closedTrades.filter(t => t.result === 'win' || t.result === 'partial').length;
-    winRate = (wins / totalClosed) * 100;
-    
+  // Wins = taken trades with actual win result
+  const wins = closedTrades.filter(t => t.result === 'win' || t.result === 'partial').length;
+
+  if (totalSignals > 0) {
+    // Effective win rate: wins ÷ ALL signals fired (observed/skipped count as non-wins)
+    winRate = (wins / totalSignals) * 100;
+  }
+
+  if (closedTrades.length > 0) {
     totalPnL = closedTrades.reduce((acc, t) => acc + (t.pnlUSDT || 0), 0);
-    
-    // Realized R:R calculation (average of wins PnL / riskAmount)
-    let winningTrades = closedTrades.filter(t => (t.result === 'win' || t.result === 'partial') && t.pnlUSDT > 0);
+
+    const winningTrades = closedTrades.filter(t => (t.result === 'win' || t.result === 'partial') && t.pnlUSDT > 0);
     if (winningTrades.length > 0) {
       const rrSum = winningTrades.reduce((sum, t) => {
-        const risk = t.riskAmount || 60; // fallback default
+        const risk = t.riskAmount || 60;
         return sum + (t.pnlUSDT / risk);
       }, 0);
       avgRR = rrSum / winningTrades.length;
     } else {
-      avgRR = 3.0; // default R:R
+      avgRR = 3.0;
     }
   }
 
+  // Capture rate
+  const captureRate = totalSignals > 0 ? ((totalTaken / totalSignals) * 100).toFixed(0) : 0;
+
   // Populate Metric DOM Elements
-  document.getElementById('backtest-winrate').innerText = totalClosed > 0 ? `${winRate.toFixed(1)}%` : '--%';
-  document.getElementById('backtest-avg-rr').innerText = totalClosed > 0 ? `1 : ${avgRR.toFixed(1)}` : '1 : --';
-  
+  document.getElementById('backtest-winrate').innerText = totalSignals > 0 ? `${winRate.toFixed(1)}%` : '--%';
+  document.getElementById('backtest-avg-rr').innerText = closedTrades.length > 0 ? `1 : ${avgRR.toFixed(1)}` : '1 : --';
+
   const pnlEl = document.getElementById('backtest-pnl');
   pnlEl.innerText = `${totalPnL >= 0 ? '+' : ''}$${totalPnL.toFixed(2)}`;
   pnlEl.className = `metric-value ${totalPnL >= 0 ? 'success-text' : 'danger-text'}`;
-  
-  document.getElementById('backtest-total').innerText = totalClosed;
 
-  // 2. Render Win/Loss dots (Last 20 trades)
+  const totalEl = document.getElementById('backtest-total');
+  totalEl.innerText = totalSignals > 0 ? `${totalTaken} / ${totalSignals}` : '0 / 0';
+  const captureSub = document.getElementById('backtest-capture-sub');
+  if (captureSub) captureSub.innerText = `Capture Rate: ${captureRate}% (Taken / Fired)`;
+
+  // 2. Render sequence dots (Last 20 all-signal history: taken+observed+skipped)
   const dotsContainer = document.getElementById('backtest-dots-container');
   if (dotsContainer) {
-    const last20 = closedTrades.slice(-20); // last 20 sorted oldest to newest
+    const sorted = [...allSignals].sort((a, b) => (a.signalTime || 0) - (b.signalTime || 0));
+    const last20 = sorted.slice(-20);
     if (last20.length === 0) {
-      dotsContainer.innerHTML = `<span style="color: var(--text-muted); font-size: 12px;">No closed trades yet.</span>`;
+      dotsContainer.innerHTML = `<span style="color: var(--text-muted); font-size: 12px;">No signals recorded yet.</span>`;
     } else {
       dotsContainer.innerHTML = last20.map(trade => {
-        let dotClass = 'open';
-        let label = 'O';
-        if (trade.result === 'win') { dotClass = 'win'; label = 'W'; }
-        else if (trade.result === 'loss') { dotClass = 'loss'; label = 'L'; }
-        else if (trade.result === 'partial') { dotClass = 'partial'; label = 'P'; }
+        let dotClass = 'observed';
+        let label = '?';
+        let titleStr = `${trade.pair} ${trade.direction} — ${trade.status}`;
 
-        return `<span class="dot-stat ${dotClass}" title="${trade.pair} ${trade.direction} exit $${trade.exitPrice}">${label}</span>`;
+        if (trade.status === 'skipped') { dotClass = 'skipped'; label = '—'; }
+        else if (trade.status === 'taken') {
+          if (trade.result === 'win') { dotClass = 'win'; label = 'W'; titleStr += ` | +$${trade.pnlUSDT?.toFixed(2)}`; }
+          else if (trade.result === 'loss') { dotClass = 'loss'; label = 'L'; titleStr += ` | -$${Math.abs(trade.pnlUSDT || 0).toFixed(2)}`; }
+          else if (trade.result === 'partial') { dotClass = 'partial'; label = 'P'; }
+          else { dotClass = 'open'; label = 'O'; }
+        }
+
+        return `<span class="dot-stat ${dotClass}" title="${titleStr}">${label}</span>`;
       }).join('');
     }
+
+    // Legend
+    dotsContainer.innerHTML += `
+      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;font-size:11px;color:var(--text-muted);">
+        <span><span class="dot-stat win" style="width:14px;height:14px;font-size:9px;">W</span> Win</span>
+        <span><span class="dot-stat loss" style="width:14px;height:14px;font-size:9px;">L</span> Loss</span>
+        <span><span class="dot-stat partial" style="width:14px;height:14px;font-size:9px;">P</span> Partial</span>
+        <span><span class="dot-stat open" style="width:14px;height:14px;font-size:9px;">O</span> Open</span>
+        <span><span class="dot-stat skipped" style="width:14px;height:14px;font-size:9px;">—</span> Skipped</span>
+        <span><span class="dot-stat observed" style="width:14px;height:14px;font-size:9px;">?</span> Observed</span>
+      </div>
+    `;
   }
 
-  // 3. Draw Equity Curve (Cumulative PnL) via Custom HTML Canvas
-  drawEquityCurve(closedTrades);
+  // 3. Draw Equity Curve (Cumulative PnL) — all signals chronologically, observed/skipped = 0
+  const allSortedForCurve = [...allSignals].sort((a, b) => (a.signalTime || 0) - (b.signalTime || 0));
+  drawEquityCurve(allSortedForCurve);
 
-  // 4. Render Confidence Score Distribution Bars
-  renderConfidenceDistribution(trades);
+  // 4. Render Confidence Score Distribution Bars (all signals, not just taken)
+  renderConfidenceDistribution(allSignals, closedTrades);
 }
 
 /**
- * Draw custom Canvas line chart representing the equity curve
- * @param {Array<Object>} closedTrades 
+ * Draw custom Canvas line chart representing the equity curve.
+ * Accepts ALL signals sorted by time. Observed/skipped signals have pnlUSDT = null → 0 (flat step).
+ * @param {Array<Object>} allSortedSignals
  */
-function drawEquityCurve(closedTrades) {
+function drawEquityCurve(allSortedSignals) {
+  const closedTrades = allSortedSignals; // renamed param — kept for internal reuse below
   const container = document.getElementById('equity-chart-container');
   if (!container) return;
 
@@ -188,50 +223,58 @@ function drawEquityCurve(closedTrades) {
     ctx.fillStyle = 'hsl(220, 10%, 48%)';
     ctx.font = '12px sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText('Awaiting trade logs to plot equity curve.', width / 2, height / 2);
+    ctx.fillText('Awaiting signals to plot equity curve.', width / 2, height / 2);
   }
 }
 
 /**
  * Render Confidence Score Distribution Chart
- * @param {Array<Object>} trades 
+ * @param {Array<Object>} allSignals - All signals (observed + skipped + taken)
+ * @param {Array<Object>} closedTrades - Closed taken trades (for win rate overlay)
  */
-function renderConfidenceDistribution(trades) {
+function renderConfidenceDistribution(allSignals, closedTrades) {
   const container = document.getElementById('confidence-distribution-container');
   if (!container) return;
 
   // Buckets: 70–74%, 75–79%, 80–84%, 85–89%, 90%+
   const buckets = [
-    { label: '70–74%', min: 70, max: 74, count: 0, wins: 0 },
-    { label: '75–79%', min: 75, max: 79, count: 0, wins: 0 },
-    { label: '80–84%', min: 80, max: 84, count: 0, wins: 0 },
-    { label: '85–89%', min: 85, max: 89, count: 0, wins: 0 },
-    { label: '90%+', min: 90, max: 100, count: 0, wins: 0 }
+    { label: '70–74%', min: 70, max: 74, count: 0, taken: 0, wins: 0 },
+    { label: '75–79%', min: 75, max: 79, count: 0, taken: 0, wins: 0 },
+    { label: '80–84%', min: 80, max: 84, count: 0, taken: 0, wins: 0 },
+    { label: '85–89%', min: 85, max: 89, count: 0, taken: 0, wins: 0 },
+    { label: '90%+', min: 90, max: 100, count: 0, taken: 0, wins: 0 }
   ];
 
-  // Populate counts from trade logs
-  trades.forEach(t => {
-    if (t.status === 'skipped') return; // only taken / active
+  // Count all signals (observed + skipped + taken)
+  allSignals.forEach(t => {
     const conf = t.confidence;
     const bucket = buckets.find(b => conf >= b.min && conf <= b.max);
     if (bucket) {
       bucket.count++;
-      if (t.result === 'win' || t.result === 'partial') {
-        bucket.wins++;
-      }
+      if (t.status === 'taken') bucket.taken++;
     }
   });
 
-  const maxCount = Math.max(...buckets.map(b => b.count), 1); // prevent divide-by-zero
+  // Win rate from closed taken trades
+  closedTrades.forEach(t => {
+    const conf = t.confidence;
+    const bucket = buckets.find(b => conf >= b.min && conf <= b.max);
+    if (bucket && (t.result === 'win' || t.result === 'partial')) {
+      bucket.wins++;
+    }
+  });
+
+  const maxCount = Math.max(...buckets.map(b => b.count), 1);
 
   container.innerHTML = buckets.map(b => {
     const widthPct = (b.count / maxCount) * 100;
-    const wr = b.count > 0 ? ((b.wins / b.count) * 100).toFixed(0) : 0;
-    
-    // Choose theme color for bar
+    const wr = b.taken > 0 ? ((b.wins / b.taken) * 100).toFixed(0) : '—';
+
     let barColor = 'var(--color-conf-low)';
     if (b.min >= 90) barColor = 'var(--color-conf-high)';
     else if (b.min >= 80) barColor = 'var(--color-conf-med)';
+
+    const takenLabel = b.count > 0 ? `${b.taken}/${b.count} taken` : '0 signals';
 
     return `
       <div class="dist-row">
@@ -239,7 +282,7 @@ function renderConfidenceDistribution(trades) {
         <div class="dist-bar-track">
           <div class="dist-bar-fill" style="width: ${widthPct}%; background-color: ${barColor}"></div>
         </div>
-        <span class="dist-count" title="Win Rate: ${wr}%">${b.count} (${wr}%)</span>
+        <span class="dist-count" title="Win Rate of taken trades: ${wr}%">${takenLabel} (WR: ${wr}%)</span>
       </div>
     `;
   }).join('');

@@ -91,14 +91,21 @@ function navigateTo(pageId) {
 
   // Refresh page specific views
   if (pageId === 'tradelog') {
-    renderTradeLogTable(State.trades, {
+    const buildTradeLogCallbacks = () => ({
       onExitConfirm: () => {
         State.trades = loadTrades();
         checkDailyLossLimit();
-        renderTradeLogTable(State.trades, { onExitConfirm: () => refreshState(), onReload: refreshState });
+        renderTradeLogTable(State.trades, buildTradeLogCallbacks());
       },
-      onReload: refreshState
+      onReload: refreshState,
+      onMarkTaken: (trade) => {
+        // Open take-trade modal for an 'observed' signal — same flow as dashboard "Take" button
+        openTakeTradeModal(trade);
+      }
     });
+    renderTradeLogTable(State.trades, buildTradeLogCallbacks());
+  } else if (pageId === 'signals') {
+    renderMarketScanner();
   } else if (pageId === 'backtest') {
     renderBacktestStats(State.trades);
   } else if (pageId === 'settings') {
@@ -173,27 +180,48 @@ async function runAnalysisForPair(symbol) {
     }
 
     State.allAnalysis[symbol] = analysis;
-    
-    // Check if new signal fired and needs alert trigger
-    if (analysis.signal && (!State.activeAnalysis || !State.activeAnalysis.signal || State.activeAnalysis.signal.id !== analysis.signal.id)) {
-      // Avoid duplicate alert alerts
-      const exists = State.trades.some(t => t.id === analysis.signal.id);
-      if (!exists && !State.suppressSignals) {
-        triggerAlert(`New AI Signal: ${symbol} ${analysis.signal.direction} (${analysis.signal.confidence}% Confidence)`, analysis.signal.direction === 'LONG' ? 'bullish' : 'bearish');
-        playAlertSound();
 
-        // V3: Send Telegram notification for new signal
-        sendTelegramSilent(
-          `📡 <b>NEW SIGNAL — ${symbol} ${analysis.signal.direction}</b>\n` +
-          `Confidence: ${analysis.signal.confidence}%\n` +
-          `Entry: $${analysis.signal.entryPrice.toFixed(2)}\n` +
-          `SL: $${analysis.signal.stopLoss.toFixed(2)} (-${(analysis.signal.slDistancePct || 0).toFixed(1)}%)\n` +
-          `TP1: $${analysis.signal.tp1.toFixed(2)} (+${(analysis.signal.tp1Pct || 0).toFixed(1)}%)\n` +
-          `TP2: $${analysis.signal.tp2.toFixed(2)} (+${(analysis.signal.tp2Pct || 0).toFixed(1)}%)\n` +
-          `TP3: $${analysis.signal.tp3.toFixed(2)} (+${(analysis.signal.tp3Pct || 0).toFixed(1)}%)\n` +
-          `R:R 1:3.0 | Expires in 3H`
-        );
+    // Auto-log new signals as 'observed' for complete signal history.
+    // Must happen before alert check so isNewSignal tracks first-seen correctly.
+    let isNewSignal = false;
+    if (analysis.signal && !State.suppressSignals) {
+      const alreadyLogged = State.trades.some(t => t.id === analysis.signal.id);
+      if (!alreadyLogged) {
+        isNewSignal = true;
+        logTrade({
+          ...analysis.signal,
+          status: 'observed',
+          leverage: State.settings.defaultLeverage,
+          marginUsed: null,
+          positionSize: null,
+          result: null,
+          exitPrice: null,
+          pnlUSDT: null,
+          notes: 'Signal observed — not yet entered.'
+        });
+        State.trades = loadTrades();
       }
+    }
+
+    // Fire in-app alert + Telegram on first-seen signal
+    if (isNewSignal) {
+      const sig = analysis.signal;
+      triggerAlert(
+        `New Signal: ${symbol} ${sig.direction} (${sig.confidence}% Conf)`,
+        sig.direction === 'LONG' ? 'bullish' : 'bearish'
+      );
+      if (symbol === State.activePair) playAlertSound();
+
+      sendTelegramSilent(
+        `📡 <b>NEW SIGNAL — ${symbol} ${sig.direction}</b>\n` +
+        `Confidence: ${sig.confidence}%\n` +
+        `Entry: $${sig.entryPrice.toFixed(2)}\n` +
+        `SL: $${sig.stopLoss.toFixed(2)} (-${(sig.slDistancePct || 0).toFixed(1)}%)\n` +
+        `TP1: $${sig.tp1.toFixed(2)} (+${(sig.tp1Pct || 0).toFixed(1)}%)\n` +
+        `TP2: $${sig.tp2.toFixed(2)} (+${(sig.tp2Pct || 0).toFixed(1)}%)\n` +
+        `TP3: $${sig.tp3.toFixed(2)} (+${(sig.tp3Pct || 0).toFixed(1)}%)\n` +
+        `R:R 1:3.0 | Expires in 3H`
+      );
     }
 
     return analysis;
@@ -253,19 +281,20 @@ async function refreshActivePair() {
       } else {
         let activeSignal = analysis.signal;
         
-        // Filter out if this signal has already been taken or skipped
+        // Hide signal card if already taken (open) or recently skipped.
+        // 'observed' status does NOT hide the card — it just means it was auto-logged, not entered yet.
         if (activeSignal) {
           const isLogged = State.trades.some(t => {
-            if (t.id === activeSignal.id) return true;
+            // Exact ID match: only suppress if taken or skipped (not 'observed')
+            if (t.id === activeSignal.id && t.status !== 'observed') return true;
+            // Same pair+direction: open taken trade, or skipped within 3 hours
             if (t.pair === activeSignal.pair && t.direction === activeSignal.direction) {
-              if (t.status === 'taken' && !t.result) return true; // open taken trade
-              if (t.status === 'skipped' && Date.now() - (t.signalTime || 0) < 3 * 3600000) return true; // skipped within 3 hours
+              if (t.status === 'taken' && !t.result) return true;
+              if (t.status === 'skipped' && Date.now() - (t.signalTime || 0) < 3 * 3600000) return true;
             }
             return false;
           });
-          if (isLogged) {
-            activeSignal = null;
-          }
+          if (isLogged) activeSignal = null;
         }
 
         const isLong = activeSignal && activeSignal.direction === 'LONG';
@@ -321,20 +350,15 @@ function handleCalculatorSettingsUpdate(updatedSettings) {
 }
 
 /**
- * Skip signal handler
+ * Skip signal handler — updates existing 'observed' record if present
  */
 function handleSkipSignal(signal) {
-  // Log trade as skipped in localStorage
-  const skippedTrade = {
-    ...signal,
-    status: 'skipped',
-    result: null,
-    exitPrice: null,
-    pnlUSDT: 0,
-    notes: 'Manually skipped by user.'
-  };
-
-  logTrade(skippedTrade);
+  const existingObserved = State.trades.find(t => t.id === signal.id && t.status === 'observed');
+  if (existingObserved) {
+    updateTrade(existingObserved.id, { status: 'skipped', notes: 'Manually skipped by user.' });
+  } else {
+    logTrade({ ...signal, status: 'skipped', result: null, exitPrice: null, pnlUSDT: 0, notes: 'Manually skipped by user.' });
+  }
   State.trades = loadTrades();
   triggerAlert(`Signal ${signal.pair} ${signal.direction} skipped.`, 'info');
   refreshActivePair();
@@ -399,8 +423,7 @@ function openTakeTradeModal(signal) {
     const positionSize = riskAmount / slDistance;
     const margin = (positionSize * signal.entryPrice) / finalLeverage;
 
-    const newTrade = {
-      ...signal,
+    const takenFields = {
       status: 'taken',
       leverage: finalLeverage,
       marginUsed: parseFloat(margin.toFixed(2)),
@@ -408,11 +431,17 @@ function openTakeTradeModal(signal) {
       result: null,
       exitPrice: null,
       pnlUSDT: null,
-      notes: notes,
-      signalTime: Date.now()
+      takenAt: Date.now(),
+      notes: notes
     };
 
-    logTrade(newTrade);
+    // Update existing 'observed' record if present; otherwise create new trade entry
+    const existingObserved = State.trades.find(t => t.id === signal.id && t.status === 'observed');
+    if (existingObserved) {
+      updateTrade(existingObserved.id, takenFields);
+    } else {
+      logTrade({ ...signal, ...takenFields, signalTime: signal.signalTime || Date.now() });
+    }
     State.trades = loadTrades();
     
     triggerAlert(`Trade Taken: ${signal.pair} ${signal.direction} at $${signal.entryPrice}`, 'info');
@@ -691,6 +720,83 @@ async function refreshOnChainPulse() {
 }
 
 /**
+ * Market Scanner — render a grid of all pairs with current signal status.
+ * Uses cached allAnalysis where available; fetches fresh for uncached pairs.
+ */
+async function renderMarketScanner() {
+  const container = document.getElementById('signals-feed-list');
+  if (!container) return;
+
+  container.innerHTML = `
+    <div style="display:flex;align-items:center;gap:12px;padding:40px 0;color:var(--text-muted);">
+      <div class="spinner" style="width:24px;height:24px;border-width:3px;"></div>
+      Scanning ${State.settings.pairs.length} pairs...
+    </div>`;
+
+  const scanResults = [];
+  for (const pair of State.settings.pairs) {
+    try {
+      let analysis = State.allAnalysis[pair];
+      if (!analysis) analysis = await runAnalysisForPair(pair);
+      if (analysis) scanResults.push({ pair, analysis });
+    } catch (e) {
+      console.warn(`Scanner: ${pair} failed:`, e.message);
+    }
+  }
+
+  if (scanResults.length === 0) {
+    container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted);">No analysis available. Check network connection.</div>';
+    return;
+  }
+
+  const cardsHTML = scanResults.map(({ pair, analysis }) => {
+    const ticker = State.tickerPrices[pair];
+    const price = ticker?.price || analysis.currPrice;
+    const changePct = ticker?.changePct ?? 0;
+    const changeClass = changePct >= 0 ? 'success-text' : 'danger-text';
+
+    const sig = analysis.signal;
+    let signalHTML = '<span class="badge badge-grey" style="font-size:0.7rem;">No Signal</span>';
+    if (sig) {
+      const badgeClass = sig.direction === 'LONG' ? 'badge-green' : 'badge-red';
+      signalHTML = `
+        <span class="badge ${badgeClass}" style="font-size:0.7rem;">${sig.direction}</span>
+        <span class="conf-score">${sig.confidence}%</span>
+      `;
+    }
+
+    const modeBadgeClass = analysis.marketMode === 'TRENDING' ? 'badge-blue' : (analysis.marketMode === 'RANGING' ? 'badge-yellow' : 'badge-grey');
+    const trendArrow = analysis.dailyDirection === 'LONG' ? '↑' : (analysis.dailyDirection === 'SHORT' ? '↓' : '~');
+    const rsi4h = Math.round(analysis.indicatorValues?.rsi4h ?? 0);
+
+    return `
+      <div class="scanner-card" data-pair="${pair}">
+        <div class="scanner-card-header">
+          <strong>${pair.replace('USDT', '/USDT')}</strong>
+          <span class="${changeClass}" style="font-size:0.8rem;">${changePct >= 0 ? '+' : ''}${Number(changePct).toFixed(2)}%</span>
+        </div>
+        <div class="scanner-price">$${Number(price).toLocaleString()}</div>
+        <div class="scanner-signal">${signalHTML}</div>
+        <div class="scanner-meta">
+          <span class="badge ${modeBadgeClass}" style="font-size:0.65rem;">${analysis.marketMode}</span>
+          <span class="scanner-indicators">RSI ${rsi4h} · ${trendArrow} Daily</span>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  container.innerHTML = `<div class="scanner-grid">${cardsHTML}</div>`;
+
+  // Click card → switch to that pair on dashboard
+  container.querySelectorAll('.scanner-card').forEach(card => {
+    card.addEventListener('click', () => {
+      handlePairSelect(card.dataset.pair);
+      navigateTo('dashboard');
+    });
+  });
+}
+
+/**
  * Bootstrap Initialization
  */
 async function init() {
@@ -778,6 +884,12 @@ async function init() {
       }
     });
     
+    // Market Scanner refresh button
+    const scannerRefreshBtn = document.getElementById('scanner-refresh-btn');
+    if (scannerRefreshBtn) {
+      scannerRefreshBtn.addEventListener('click', renderMarketScanner);
+    }
+
     // Dismiss loss limit overlay button
     document.getElementById('dismiss-loss-banner-btn').addEventListener('click', () => {
       if (lossLimitBanner) lossLimitBanner.classList.add('hidden');

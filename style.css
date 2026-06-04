@@ -1794,8 +1794,118 @@ h1, h2, h3, h4, .logo-text, .metric-value, .tf-btn {
     grid-template-columns: 1fr 1fr;
     gap: 12px;
   }
-  
+
   .feed-item > div:nth-child(4) {
     grid-column: span 2;
   }
+
+  /* Market Scanner responsiveness */
+  .scanner-grid {
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  }
+}
+
+/* ============================================================
+   Market Scanner — All Pairs Grid
+   ============================================================ */
+
+.scanner-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 1rem;
+  padding: 0.25rem 0 1rem;
+}
+
+.scanner-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 0.875rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  cursor: pointer;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+  user-select: none;
+}
+
+.scanner-card:hover {
+  border-color: var(--color-info);
+  box-shadow: 0 0 0 3px var(--color-info-muted);
+}
+
+.scanner-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.scanner-price {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  font-family: var(--font-family-display);
+}
+
+.scanner-signal {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-height: 24px;
+}
+
+.scanner-signal .conf-score {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.scanner-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  padding-top: 0.25rem;
+  border-top: 1px solid var(--border-color);
+}
+
+.scanner-indicators {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.scanner-footer {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 0.5rem;
+}
+
+/* ============================================================
+   Trade Log — Observed (auto-logged, not entered) Row
+   ============================================================ */
+
+tr.trade-observed td {
+  opacity: 0.6;
+  font-style: italic;
+}
+
+tr.trade-observed:hover td {
+  opacity: 0.85;
+}
+
+/* ============================================================
+   Backtest dots — observed and skipped
+   ============================================================ */
+
+.dot-stat.observed {
+  background-color: var(--bg-surface-elevated);
+  border: 1.5px dashed var(--border-color-light);
+  color: var(--text-muted);
+}
+
+.dot-stat.skipped {
+  background-color: var(--color-neutral-muted);
+  color: var(--text-muted);
 }

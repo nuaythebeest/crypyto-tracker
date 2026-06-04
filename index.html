@@ -56,8 +56,8 @@
             <span>Dashboard</span>
           </button>
           <button class="nav-item" data-page="signals">
-            <i class="ti ti-brain"></i>
-            <span>AI Signals</span>
+            <i class="ti ti-radar"></i>
+            <span>Market Scanner</span>
           </button>
           <button class="nav-item" data-page="tradelog">
             <i class="ti ti-history"></i>
@@ -143,33 +143,18 @@
           </div>
         </section>
 
-        <!-- AI Signals Feed Page -->
+        <!-- Market Scanner Page -->
         <section id="page-signals" class="page-view">
           <div class="page-header">
-            <h2>AI Signals Feed</h2>
-            <div class="feed-filters">
-              <select id="filter-pair" class="filter-select">
-                <option value="ALL">All Pairs</option>
-                <option value="BTCUSDT">BTCUSDT</option>
-                <option value="ETHUSDT">ETHUSDT</option>
-                <option value="SOLUSDT">SOLUSDT</option>
-                <option value="BNBUSDT">BNBUSDT</option>
-                <option value="XRPUSDT">XRPUSDT</option>
-              </select>
-              <select id="filter-direction" class="filter-select">
-                <option value="ALL">All Directions</option>
-                <option value="LONG">Long</option>
-                <option value="SHORT">Short</option>
-              </select>
-              <select id="filter-confidence" class="filter-select">
-                <option value="70">>= 70% Confidence</option>
-                <option value="80">>= 80% Confidence</option>
-                <option value="90">>= 90% Confidence</option>
-              </select>
+            <h2>Market Scanner</h2>
+            <div class="trade-log-controls">
+              <button id="scanner-refresh-btn" class="secondary-btn">
+                <i class="ti ti-refresh"></i> Refresh Scan
+              </button>
             </div>
           </div>
           <div id="signals-feed-list" class="signals-feed-list">
-            <!-- Dynamic signals feed -->
+            <!-- Scanner cards rendered dynamically -->
           </div>
         </section>
 
@@ -222,14 +207,14 @@
           </div>
           <div class="metrics-grid">
             <div class="metric-card">
-              <span class="metric-title">Win Rate</span>
+              <span class="metric-title">Effective Win Rate</span>
               <span id="backtest-winrate" class="metric-value">--%</span>
-              <span class="metric-sub">Last 20 Closed Trades</span>
+              <span class="metric-sub">Wins ÷ All Signals Fired</span>
             </div>
             <div class="metric-card">
               <span class="metric-title">Average R:R</span>
               <span id="backtest-avg-rr" class="metric-value">1 : --</span>
-              <span class="metric-sub">Risk to Reward Ratio</span>
+              <span class="metric-sub">Taken Trades (Actual)</span>
             </div>
             <div class="metric-card">
               <span class="metric-title">Total PnL</span>
@@ -237,9 +222,9 @@
               <span class="metric-sub" id="backtest-pnl-sub">USDT</span>
             </div>
             <div class="metric-card">
-              <span class="metric-title">Total Signals</span>
-              <span id="backtest-total" class="metric-value">0</span>
-              <span class="metric-sub">Trades Taken</span>
+              <span class="metric-title">Signal Capture</span>
+              <span id="backtest-total" class="metric-value">0 / 0</span>
+              <span class="metric-sub" id="backtest-capture-sub">Taken / Total Signals Fired</span>
             </div>
           </div>
 

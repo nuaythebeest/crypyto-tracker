@@ -242,3 +242,69 @@ Set these in Railway → Variables:
 | MODIFIED | `api/telegram.js` (split into sendTelegram + sendTelegramSilent) |
 | MODIFIED | `app.js` (import sendTelegramSilent, swap 4 call sites, wire test button) |
 | UPDATED | `CHANGE.md` |
+
+---
+
+## 2026-06-04 — Signal History, Market Scanner, Backtest Capture Rate
+
+### 23. Complete Signal History — Auto-Log All Signals as 'Observed'
+- **Problem**: Trade log only recorded signals you explicitly took or skipped. Ignored signals were lost. Backtest had no visibility into full signal stream.
+- **Solution**:
+  - Every signal firing (confidence ≥ 70%) is now auto-logged with `status: 'observed'` — full entry/SL/TP/confidence captured at fire time.
+  - `'observed'` rows appear dimmed/italic in trade log — visually distinct from entered trades.
+  - Clicking "Take" on dashboard updates the existing `'observed'` record to `'taken'` (no duplicates). "Skip" similarly updates to `'skipped'`.
+  - `'observed'` status does **not** suppress the signal card — card stays visible until explicitly taken or skipped.
+  - Telegram alert and in-app notification fire exactly once per new signal (`isNewSignal` flag tracks first-seen).
+
+### 24. Trade Log — "Enter Trade" Button for Observed Signals
+- **Problem**: No way to retroactively log entry for an auto-observed signal (e.g. entered on exchange but missed the dashboard "Take" button).
+- **Solution**:
+  - Added "Enter Trade" button on every `'observed'` row in trade log table.
+  - Opens same "Take Signal Setup" modal used on dashboard.
+  - On confirm, updates `'observed'` record to `'taken'` with full sizing info. No duplicate rows.
+
+### 25. Backtest — Signal Capture Rate + All-Signal Visualization
+- **Problem**: Backtest showed only taken trades. No visibility into how many signals fired vs entered (capture rate). Confidence distribution skipped observed/skipped signals.
+- **Solution**:
+  - "Total Signals" card renamed to **Signal Capture** — shows `taken / total_fired` (e.g. `3 / 8`) with capture rate % subtitle.
+  - Win/Loss dots now show all signals (last 20): `W` win, `L` loss, `P` partial, `O` open taken, `—` skipped, `?` observed. Legend added below dots.
+  - Confidence distribution now counts all signals per bucket (observed + skipped + taken), showing taken count and win rate per bucket.
+
+### 26. Market Scanner — All-Pairs Overview Page
+- **Problem**: "AI Signals" nav item was never implemented — clicking it showed empty page. Users clicked each pair individually to check signal status.
+- **Solution**:
+  - Repurposed empty page as **Market Scanner**. Nav icon → radar, label → "Market Scanner".
+  - Shows all configured pairs as cards: price, 24h change %, signal (LONG/SHORT/No Signal + confidence %), market mode, 4H RSI, daily trend.
+  - Clicking a card switches to that pair on Dashboard.
+  - "Refresh Scan" button re-runs analysis.
+  - Signals discovered during scan auto-logged as `'observed'`.
+
+### Files Changed
+| Action | File |
+|---|---|
+| MODIFIED | `index.html` (nav rename, Market Scanner page, Backtest capture metric) |
+| MODIFIED | `style.css` (scanner grid/card styles, observed row, dot classes) |
+| MODIFIED | `app.js` (auto-log observed, isNewSignal, isLogged fix, skip/take updates, renderMarketScanner) |
+| MODIFIED | `ui/trade-log-ui.js` (observed row, Enter Trade button, onMarkTaken callback) |
+| MODIFIED | `ui/backtest-ui.js` (capture rate, all-signal dots, confidence distribution) |
+| UPDATED | `CHANGE.md` |
+
+---
+
+## 2026-06-04 — Backtest: Effective Win Rate Over All Signals
+
+### 27. Effective Win Rate — All Signals as Denominator
+- **Problem**: Win rate was calculated as `wins ÷ closed_taken_trades`, which only reflected performance of trades you chose to enter. Missed signals (observed/skipped) were invisible to the metric — making win rate look artificially high.
+- **Solution**:
+  - Win rate now uses **all signals fired** as denominator: `wins ÷ total_signals_fired` (observed + skipped + taken).
+  - Observed/skipped signals count as non-wins. This gives the true "effective system win rate" — how good the overall signal engine + your discipline combination actually is.
+  - Average R:R and Total PnL remain based on actual closed taken trades (we have no real exit data for unobserved signals).
+  - Equity curve now plots **all signals chronologically** — observed/skipped signals appear as flat (0-PnL) steps, visually showing where opportunities were passed up or missed.
+  - Metric renamed "Effective Win Rate" with subtitle "Wins ÷ All Signals Fired" for clarity.
+
+### Files Changed
+| Action | File |
+|---|---|
+| MODIFIED | `index.html` (Win Rate label + subtitle updated) |
+| MODIFIED | `ui/backtest-ui.js` (win rate denominator, equity curve includes all signals) |
+| UPDATED | `CHANGE.md` |

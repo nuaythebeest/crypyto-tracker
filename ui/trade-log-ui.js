@@ -8,7 +8,8 @@ let activeExitTradeId = null;
 /**
  * Render the Trade Log Table
  * @param {Array<Object>} trades - All logged trades
- * @param {Object} callbacks - callbacks: { onExitConfirm, onReload }
+ * @param {Object} callbacks - callbacks: { onExitConfirm, onReload, onMarkTaken }
+ *   onMarkTaken(trade) — called when user clicks "Enter Trade" on an observed row
  */
 export function renderTradeLogTable(trades, callbacks) {
   const tbody = document.getElementById('trade-log-tbody');
@@ -18,7 +19,7 @@ export function renderTradeLogTable(trades, callbacks) {
     tbody.innerHTML = `
       <tr>
         <td colspan="14" style="text-align: center; color: var(--text-muted); padding: 32px;">
-          No trades recorded in the log yet. Taken signals will appear here.
+          No signals recorded yet. Signals fire automatically when confidence ≥ 70%.
         </td>
       </tr>
     `;
@@ -53,7 +54,9 @@ export function renderTradeLogTable(trades, callbacks) {
 
     // Action button or text
     let actionHTML = '';
-    if (trade.status === 'taken' && !trade.result) {
+    if (trade.status === 'observed') {
+      actionHTML = `<button class="secondary-btn btn-enter-trade" data-id="${trade.id}" style="padding: 4px 8px; font-size: 11px; white-space: nowrap;">Enter Trade</button>`;
+    } else if (trade.status === 'taken' && !trade.result) {
       actionHTML = `<button class="primary-btn btn-exit-trade" data-id="${trade.id}" style="padding: 4px 8px; font-size: 11px;">Close Trade</button>`;
     } else if (trade.status === 'skipped') {
       actionHTML = `<span style="color: var(--text-muted);">Skipped</span>`;
@@ -67,9 +70,13 @@ export function renderTradeLogTable(trades, callbacks) {
     let statusClass = 'badge-grey';
     if (trade.status === 'taken') statusClass = 'badge-blue';
     else if (trade.status === 'active') statusClass = 'badge-yellow';
+    else if (trade.status === 'skipped') statusClass = 'badge-grey';
+    // 'observed' stays badge-grey
+
+    const leverageDisplay = trade.leverage != null ? `${trade.leverage}x` : '--';
 
     return `
-      <tr data-trade-id="${trade.id}">
+      <tr data-trade-id="${trade.id}" class="${trade.status === 'observed' ? 'trade-observed' : ''}">
         <td>${dateStr}</td>
         <td><strong>${trade.pair.replace('USDT', '')}</strong></td>
         <td class="${dirClass}"><strong>${trade.direction}</strong></td>
@@ -78,7 +85,7 @@ export function renderTradeLogTable(trades, callbacks) {
         <td>$${trade.tp1.toLocaleString()}</td>
         <td>$${trade.tp2.toLocaleString()}</td>
         <td>$${trade.tp3.toLocaleString()}</td>
-        <td>${trade.leverage}x</td>
+        <td>${leverageDisplay}</td>
         <td>${trade.confidence}%</td>
         <td><span class="badge ${statusClass}">${trade.status.toUpperCase()}</span></td>
         <td><span class="pnl-text ${pnlClass}">${resultText}</span></td>
@@ -98,6 +105,17 @@ export function renderTradeLogTable(trades, callbacks) {
       }
     });
   });
+
+  // Attach "Enter Trade" button listeners for observed rows
+  if (callbacks.onMarkTaken) {
+    tbody.querySelectorAll('.btn-enter-trade').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const tradeId = e.target.dataset.id;
+        const trade = trades.find(t => t.id === tradeId);
+        if (trade) callbacks.onMarkTaken(trade);
+      });
+    });
+  }
 }
 
 /**

@@ -42,3 +42,23 @@ export async function sendTelegramSilent(message) {
     console.warn('Telegram notification failed:', e.message);
   }
 }
+
+/**
+ * Poll Telegram for incoming updates (user replies to bot messages).
+ * Uses getUpdates with offset so only unseen messages are returned.
+ * Returns array of Telegram update objects, or [] on failure / unconfigured.
+ * @param {number} offset - Fetch updates with update_id >= offset
+ */
+export async function fetchTelegramUpdates(offset = 0) {
+  if (!TELEGRAM_BOT_TOKEN || TELEGRAM_BOT_TOKEN === 'your-bot-token-here') return [];
+  try {
+    const res = await fetch(
+      `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates?offset=${offset}&limit=20&timeout=0`
+    );
+    const json = await res.json();
+    return json.ok ? json.result : [];
+  } catch (e) {
+    console.warn('Telegram getUpdates failed:', e.message);
+    return [];
+  }
+}

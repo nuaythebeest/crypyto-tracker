@@ -35,7 +35,10 @@ import { renderTradeLogTable, initExportCSV } from './ui/trade-log-ui.js';
 import { renderBacktestStats } from './ui/backtest-ui.js';
 import { renderAlertsFeed, renderAlertsPopover, updateAlertBadge, playAlertSound } from './ui/alerts-ui.js';
 import { checkCorrelation, isDailyLossLimitReached } from './risk/position-sizing.js';
-import { sendTelegram, sendTelegramSilent } from './api/telegram.js';
+import { sendTelegram, sendTelegramSilent, fetchTelegramUpdates } from './api/telegram.js';
+
+// Alert cooldown constant — minimum ms between same alert type for same trade
+const ALERT_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
 
 // Application State
 const State = {
@@ -49,7 +52,9 @@ const State = {
   allAnalysis: {},       // cache of analysis per pair: { BTCUSDT: analysisObj }
   activePage: 'dashboard',
   suppressSignals: false,
-  unreadAlertsCount: 0
+  unreadAlertsCount: 0,
+  alertCooldowns: {},    // { "tradeId:alertType": lastFiredTimestamp } — prevents alert spam
+  lastTelegramUpdateId: 0 // tracks last-seen Telegram update for reply polling
 };
 
 // DOM references
@@ -182,24 +187,53 @@ async function runAnalysisForPair(symbol) {
     State.allAnalysis[symbol] = analysis;
 
     // Auto-log new signals as 'observed' for complete signal history.
-    // Must happen before alert check so isNewSignal tracks first-seen correctly.
+    // Two-tier de-duplication:
+    //   1. Exact ID match (State.allAnalysis preserved ID across soft refreshes)
+    //   2. Same pair+direction within 3 hours from localStorage (survives hard reload / WS reconnect)
+    //      → silently update prices on existing record instead of firing a new alert
     let isNewSignal = false;
     if (analysis.signal && !State.suppressSignals) {
       const alreadyLogged = State.trades.some(t => t.id === analysis.signal.id);
+
       if (!alreadyLogged) {
-        isNewSignal = true;
-        logTrade({
-          ...analysis.signal,
-          status: 'observed',
-          leverage: State.settings.defaultLeverage,
-          marginUsed: null,
-          positionSize: null,
-          result: null,
-          exitPrice: null,
-          pnlUSDT: null,
-          notes: 'Signal observed — not yet entered.'
-        });
-        State.trades = loadTrades();
+        // Secondary guard: same continuing signal with drifted price (reconnect / page reload)
+        const recentSame = State.trades.find(t =>
+          t.pair === analysis.signal.pair &&
+          t.direction === analysis.signal.direction &&
+          (t.status === 'observed' || t.status === 'taken') &&
+          !t.result &&
+          Date.now() - (t.signalTime || 0) < 3 * 3600000
+        );
+
+        if (recentSame) {
+          // Same signal, prices drifted — update existing record silently, adopt persisted identity
+          updateTrade(recentSame.id, {
+            entryPrice: analysis.signal.entryPrice,
+            stopLoss:   analysis.signal.stopLoss,
+            tp1: analysis.signal.tp1, tp2: analysis.signal.tp2, tp3: analysis.signal.tp3,
+            slDistancePct: analysis.signal.slDistancePct,
+            tp1Pct: analysis.signal.tp1Pct, tp2Pct: analysis.signal.tp2Pct, tp3Pct: analysis.signal.tp3Pct,
+          });
+          analysis.signal.id         = recentSame.id;
+          analysis.signal.signalTime  = recentSame.signalTime;
+          analysis.signal.expiresAt   = recentSame.expiresAt;
+          State.trades = loadTrades();
+        } else {
+          // Genuinely new signal — log + alert
+          isNewSignal = true;
+          logTrade({
+            ...analysis.signal,
+            status: 'observed',
+            leverage: State.settings.defaultLeverage,
+            marginUsed: null,
+            positionSize: null,
+            result: null,
+            exitPrice: null,
+            pnlUSDT: null,
+            notes: 'Signal observed — not yet entered.'
+          });
+          State.trades = loadTrades();
+        }
       }
     }
 
@@ -489,47 +523,67 @@ function checkLivePriceAlerts(pair, price) {
   
   openTrades.forEach(trade => {
     const isLong = trade.direction === 'LONG';
-    
+
+    // Helper: returns true if this alert type is on cooldown for this trade
+    const onCooldown = (type) => {
+      const key = `${trade.id}:${type}`;
+      if (Date.now() - (State.alertCooldowns[key] || 0) < ALERT_COOLDOWN_MS) return true;
+      State.alertCooldowns[key] = Date.now();
+      return false;
+    };
+
     // Stop Loss hit check
     if (isLong ? (price <= trade.stopLoss) : (price >= trade.stopLoss)) {
-      triggerAlert(`⛔ STOP LOSS HIT for ${pair} ${trade.direction} at $${price.toLocaleString()}`, 'warning');
-      playAlertSound();
+      if (!onCooldown('sl')) {
+        triggerAlert(`⛔ STOP LOSS HIT for ${pair} ${trade.direction} at $${price.toLocaleString()}`, 'warning');
+        playAlertSound();
 
-      // V3: Send Telegram notification for stop loss
-      const pnl = parseFloat((isLong ? (trade.stopLoss - trade.entryPrice) : (trade.entryPrice - trade.stopLoss)) * trade.positionSize);
-      sendTelegramSilent(
-        `🛑 <b>STOP LOSS HIT — ${trade.pair} ${trade.direction}</b>\n` +
-        `Exit at $${price.toFixed(2)}\n` +
-        `Loss: -$${Math.abs(pnl).toFixed(2)} USDT`
-      );
+        const pnl = parseFloat((isLong ? (trade.stopLoss - trade.entryPrice) : (trade.entryPrice - trade.stopLoss)) * (trade.positionSize || 0));
+        sendTelegramSilent(
+          `🛑 <b>STOP LOSS HIT — ${trade.pair} ${trade.direction}</b>\n` +
+          `Exit at $${price.toFixed(2)}\n` +
+          `Loss: -$${Math.abs(pnl).toFixed(2)} USDT\n` +
+          `Reply <b>close</b> to mark trade closed.`
+        );
 
-      // Auto-exit trade in logs
-      const updates = {
-        result: 'loss',
-        exitPrice: trade.stopLoss,
-        pnlUSDT: parseFloat((isLong ? (trade.stopLoss - trade.entryPrice) : (trade.entryPrice - trade.stopLoss)) * trade.positionSize),
-        notes: 'Auto-closed: Stop Loss hit.'
-      };
-      updateTrade(trade.id, updates);
-      State.trades = loadTrades();
-      checkDailyLossLimit();
+        // Auto-exit trade in logs
+        updateTrade(trade.id, {
+          result: 'loss',
+          exitPrice: trade.stopLoss,
+          pnlUSDT: parseFloat((isLong ? (trade.stopLoss - trade.entryPrice) : (trade.entryPrice - trade.stopLoss)) * (trade.positionSize || 0)),
+          notes: 'Auto-closed: Stop Loss hit.'
+        });
+        State.trades = loadTrades();
+        checkDailyLossLimit();
+      }
     }
-    
-    // TP targets hit checks
+
+    // TP1 hit
     if (isLong ? (price >= trade.tp1) : (price <= trade.tp1)) {
-      triggerAlert(`🎯 TAKE PROFIT 1 HIT for ${pair} ${trade.direction} at $${price.toLocaleString()}`, 'bullish');
-      playAlertSound();
-
-      // V3: Send Telegram notification for TP1
-      sendTelegramSilent(
-        `🎯 <b>TP1 HIT — ${trade.pair} ${trade.direction}</b>\n` +
-        `Price reached $${price.toFixed(2)}\n` +
-        `Action: Close 50% of position now.\n` +
-        `Move Stop Loss to breakeven (entry price) ✅`
-      );
+      if (!onCooldown('tp1')) {
+        triggerAlert(`🎯 TP1 HIT for ${pair} ${trade.direction} at $${price.toLocaleString()}`, 'bullish');
+        playAlertSound();
+        sendTelegramSilent(
+          `🎯 <b>TP1 HIT — ${trade.pair} ${trade.direction}</b>\n` +
+          `Price reached $${price.toFixed(2)}\n` +
+          `Action: Close 50% of position now.\n` +
+          `Move Stop Loss to breakeven (entry price) ✅\n` +
+          `Reply <b>close</b> to stop further alerts.`
+        );
+      }
     }
+
+    // TP2 hit
     if (isLong ? (price >= trade.tp2) : (price <= trade.tp2)) {
-      triggerAlert(`🎯 TAKE PROFIT 2 HIT for ${pair} ${trade.direction} at $${price.toLocaleString()}`, 'bullish');
+      if (!onCooldown('tp2')) {
+        triggerAlert(`🎯 TP2 HIT for ${pair} ${trade.direction} at $${price.toLocaleString()}`, 'bullish');
+        sendTelegramSilent(
+          `🎯 <b>TP2 HIT — ${trade.pair} ${trade.direction}</b>\n` +
+          `Price reached $${price.toFixed(2)}\n` +
+          `Action: Close remaining position or trail SL to TP1. 🏆\n` +
+          `Reply <b>close</b> to stop further alerts.`
+        );
+      }
     }
   });
 }
@@ -717,6 +771,109 @@ async function refreshOnChainPulse() {
       </div>
     </div>
   `;
+}
+
+/**
+ * Poll Telegram for reply commands from user.
+ * Supported replies (case-insensitive):
+ *   Replied to NEW SIGNAL alert  → "taken"/"take"/"yes" | "skip"/"pass"/"no"
+ *   Replied to TP/SL alert       → "close"/"sold"/"done"/"closed"
+ * Runs every 60 seconds via setInterval.
+ */
+async function processTelegramReplies() {
+  try {
+    const updates = await fetchTelegramUpdates(State.lastTelegramUpdateId + 1);
+    if (!updates.length) return;
+
+    // Advance offset so next poll skips already-processed updates
+    State.lastTelegramUpdateId = updates[updates.length - 1].update_id;
+
+    for (const update of updates) {
+      const msg = update.message;
+      if (!msg || !msg.reply_to_message || !msg.text) continue;
+
+      const replyText      = msg.text.trim().toLowerCase();
+      const originalText   = msg.reply_to_message.text || '';
+
+      // --- Extract pair + direction from original bot message ---
+      // Matches "NEW SIGNAL — BTCUSDT SHORT" or "TP1 HIT — BTCUSDT SHORT" or "STOP LOSS HIT — BTCUSDT SHORT"
+      const contextMatch = originalText.match(/(?:NEW SIGNAL|TP\d+ HIT|STOP LOSS HIT)[^\w]*([A-Z]+USDT)\s+(LONG|SHORT)/);
+      if (!contextMatch) continue;
+
+      const pair      = contextMatch[1];
+      const direction = contextMatch[2];
+
+      const isSignalAlert = /NEW SIGNAL/.test(originalText);
+      const isTradeAlert  = /TP\d+ HIT|STOP LOSS HIT/.test(originalText);
+
+      // --- "taken" / "take" / "yes" → mark observed signal as taken ---
+      if (isSignalAlert && ['taken', 'take', 'yes'].includes(replyText)) {
+        const observed = State.trades.find(t =>
+          t.pair === pair && t.direction === direction &&
+          t.status === 'observed' && !t.result
+        );
+        if (observed) {
+          updateTrade(observed.id, {
+            status: 'taken',
+            takenAt: Date.now(),
+            leverage: State.settings.defaultLeverage,
+            notes: 'Marked taken via Telegram reply.'
+          });
+          State.trades = loadTrades();
+          sendTelegramSilent(`✅ <b>Trade logged: ${pair} ${direction} TAKEN</b>\nView app to close when TP/SL hit.`);
+          triggerAlert(`Telegram: ${pair} ${direction} marked TAKEN.`, 'info');
+        }
+      }
+
+      // --- "skip" / "pass" / "no" → mark observed signal as skipped ---
+      else if (isSignalAlert && ['skip', 'pass', 'no'].includes(replyText)) {
+        const observed = State.trades.find(t =>
+          t.pair === pair && t.direction === direction &&
+          t.status === 'observed' && !t.result
+        );
+        if (observed) {
+          updateTrade(observed.id, { status: 'skipped', notes: 'Skipped via Telegram reply.' });
+          State.trades = loadTrades();
+          sendTelegramSilent(`⏭ <b>${pair} ${direction}</b> marked as skipped.`);
+        }
+      }
+
+      // --- "close" / "sold" / "done" / "closed" → close open taken trade ---
+      else if (isTradeAlert && ['close', 'sold', 'done', 'closed'].includes(replyText)) {
+        const openTrade = State.trades.find(t =>
+          t.pair === pair && t.direction === direction &&
+          t.status === 'taken' && !t.result
+        );
+        if (openTrade) {
+          const exitPrice = State.tickerPrices[pair]?.price || openTrade.tp1;
+          const isLong    = direction === 'LONG';
+          const pnlUSDT   = parseFloat(
+            ((isLong ? (exitPrice - openTrade.entryPrice) : (openTrade.entryPrice - exitPrice)) * (openTrade.positionSize || 0)).toFixed(2)
+          );
+          updateTrade(openTrade.id, {
+            result: 'partial',
+            exitPrice: parseFloat(exitPrice.toFixed(4)),
+            pnlUSDT,
+            notes: 'Closed via Telegram reply.'
+          });
+          State.trades = loadTrades();
+          checkDailyLossLimit();
+          sendTelegramSilent(
+            `🔒 <b>Trade closed: ${pair} ${direction}</b>\n` +
+            `Exit: $${Number(exitPrice).toFixed(2)}\n` +
+            `PnL: ${pnlUSDT >= 0 ? '+' : ''}$${pnlUSDT.toFixed(2)} USDT`
+          );
+          triggerAlert(`Telegram: ${pair} ${direction} trade closed.`, 'info');
+          // Clear TP/SL cooldowns so they don't interfere with future trades on this pair
+          delete State.alertCooldowns[`${openTrade.id}:tp1`];
+          delete State.alertCooldowns[`${openTrade.id}:tp2`];
+          delete State.alertCooldowns[`${openTrade.id}:sl`];
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('processTelegramReplies error:', e.message);
+  }
 }
 
 /**
@@ -982,6 +1139,23 @@ async function init() {
     setInterval(async () => {
       await refreshOnChainPulse();
     }, 5 * 60 * 1000);
+
+    // 10-minute background all-pairs signal scan
+    // Ensures non-active pairs (ETH, SOL, BNB, XRP) are analysed and their signals auto-logged
+    setInterval(async () => {
+      for (const pair of State.settings.pairs) {
+        if (pair === State.activePair) continue; // dashboard already handles active pair
+        try {
+          await runAnalysisForPair(pair);
+        } catch (e) {
+          console.warn(`Background scan: ${pair} failed:`, e.message);
+        }
+      }
+    }, 10 * 60 * 1000);
+
+    // Telegram reply polling — every 60 seconds, process user replies to bot alerts
+    setInterval(processTelegramReplies, 60 * 1000);
+    processTelegramReplies(); // initial pass on startup (pick up any replies sent while app was offline)
 
   } catch (error) {
     console.error('Error during bootstrapping initialization:', error);

@@ -308,3 +308,51 @@ Set these in Railway → Variables:
 | MODIFIED | `index.html` (Win Rate label + subtitle updated) |
 | MODIFIED | `ui/backtest-ui.js` (win rate denominator, equity curve includes all signals) |
 | UPDATED | `CHANGE.md` |
+
+---
+
+## 2026-06-06 — Alert Flood Fix, Telegram Reply Commands, Multi-Pair Scan
+
+### 28. Alert Flood Fix — 5-Minute Cooldown Per Alert Type
+- **Problem**: `checkLivePriceAlerts` fires on every WebSocket price tick with no throttle. Price hovering at TP1 for a few seconds produces 4–10 identical Telegram messages simultaneously.
+- **Solution**:
+  - Added `State.alertCooldowns = {}` — in-memory map of `"tradeId:alertType" → lastFiredTimestamp`.
+  - Each alert type (`:tp1`, `:tp2`, `:sl`) per trade is gated by `ALERT_COOLDOWN_MS = 5 minutes`.
+  - Telegram messages for TP1 and TP2 now include `Reply close to stop further alerts.` hint.
+  - SL alert still auto-closes the trade (drops from `openTrades` filter), cooldown adds safety margin for the race window between alert and `State.trades = loadTrades()`.
+
+### 29. New Signal Re-Alert Fix — Reconnect / Page Reload De-Duplication
+- **Problem**: On WebSocket reconnect or hard page reload, `State.allAnalysis` is cleared. Signal engine generates a new UUID for the same continuing signal. `alreadyLogged` check (ID-based) misses it → Telegram fires "NEW SIGNAL" again, creating hourly duplicates.
+- **Solution**:
+  - Added secondary guard in `runAnalysisForPair`: after ID-based check fails, look for a recent `observed`/`taken` (non-closed) signal for the same pair+direction within the last 3 hours in localStorage.
+  - If found: silently update prices on existing record (entry/SL/TP drift with market) and adopt its persisted ID — no new alert fires.
+  - If not found: genuinely new signal → log + alert as before.
+
+### 30. Telegram Reply Commands — Control Trades from Telegram
+- **Problem**: App could only send alerts to Telegram. Users had to open the app to mark signals as taken/skipped or to close trades and stop TP spam.
+- **Solution**:
+  - Added `fetchTelegramUpdates(offset)` to `api/telegram.js` — polls `getUpdates` API for incoming messages.
+  - Added `processTelegramReplies()` to `app.js` — runs every 60 seconds.
+  - Parses `reply_to_message.text` to identify which pair+direction the reply refers to.
+  - Supported commands (reply to any bot alert):
+    | Reply | Action |
+    |---|---|
+    | `taken` / `take` / `yes` | Mark most recent observed signal as taken |
+    | `skip` / `pass` / `no` | Mark observed signal as skipped |
+    | `close` / `sold` / `done` / `closed` | Close open taken trade, compute PnL, stop TP alerts |
+  - Sends confirmation back to Telegram after each action.
+  - Runs initial pass on app startup to catch replies sent while app was offline.
+
+### 31. Multi-Pair Background Scan — All Pairs Get Signals
+- **Problem**: Signal analysis only ran for `State.activePair`. ETH, SOL, BNB, XRP were never analyzed unless user clicked them or opened Market Scanner. Users only saw BTC signals in Telegram.
+- **Solution**:
+  - Added 10-minute background timer in `init()` that runs `runAnalysisForPair` for every configured pair **except the active pair** (active pair is already refreshed by dashboard interactions).
+  - API load: 5 pairs × 4 calls = 20 requests per 10 minutes — well within Binance limits (1200/min).
+  - New signals on any pair now auto-log as `observed` and fire Telegram alerts regardless of which pair is currently displayed on screen.
+
+### Files Changed
+| Action | File |
+|---|---|
+| MODIFIED | `app.js` (State: alertCooldowns+lastTelegramUpdateId, cooldown logic, re-alert guard, processTelegramReplies, background scan timer) |
+| MODIFIED | `api/telegram.js` (add fetchTelegramUpdates export) |
+| UPDATED | `CHANGE.md` |

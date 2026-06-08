@@ -37,6 +37,35 @@ export async function fetchKlines(symbol, interval, limit = 200) {
 }
 
 /**
+ * Fetch OHLCV Candlestick Data for a specific time range (used for auto-backtest evaluation)
+ * @param {string} symbol
+ * @param {string} interval - '1h', '4h', '1d'
+ * @param {number} startTime - Unix ms timestamp
+ * @param {number} endTime   - Unix ms timestamp
+ * @returns {Promise<Array>} Arrays of [time, open, high, low, close, volume, closeTime]
+ */
+export async function fetchKlinesRange(symbol, interval, startTime, endTime) {
+  try {
+    const url = `${BINANCE_SPOT_BASE}/klines?symbol=${symbol}&interval=${interval}&startTime=${startTime}&endTime=${endTime}&limit=1000`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+    const data = await res.json();
+    return data.map(c => [
+      parseInt(c[0]),          // Open Time (ms)
+      parseFloat(c[1]),        // Open
+      parseFloat(c[2]),        // High
+      parseFloat(c[3]),        // Low
+      parseFloat(c[4]),        // Close
+      parseFloat(c[5]),        // Volume
+      parseInt(c[6])           // Close Time (ms)
+    ]);
+  } catch (error) {
+    console.error(`Error fetching klines range for ${symbol} (${interval}):`, error);
+    throw error;
+  }
+}
+
+/**
  * Fetch 24h Ticker Price Change Statistics
  * @param {string} symbol
  */

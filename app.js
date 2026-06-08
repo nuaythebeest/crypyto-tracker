@@ -14,14 +14,15 @@ import {
   clearTradeLog
 } from './storage/trade-log.js';
 
-import { 
-  fetchKlines, 
-  fetchTicker24h, 
-  fetchFundingRate, 
-  fetchOpenInterest, 
-  fetchLongShortRatio, 
-  fetchFearGreedIndex, 
-  fetchGlobalMarketStats 
+import {
+  fetchKlines,
+  fetchKlinesRange,
+  fetchTicker24h,
+  fetchFundingRate,
+  fetchOpenInterest,
+  fetchLongShortRatio,
+  fetchFearGreedIndex,
+  fetchGlobalMarketStats
 } from './api/binance-rest.js';
 
 import { initWebSocket, closeWebSocket } from './api/binance-ws.js';
@@ -112,6 +113,7 @@ function navigateTo(pageId) {
   } else if (pageId === 'signals') {
     renderMarketScanner();
   } else if (pageId === 'backtest') {
+    State.trades = loadTrades();  // always fresh load before rendering backtest
     renderBacktestStats(State.trades);
   } else if (pageId === 'settings') {
     loadSettingsForm();
@@ -878,6 +880,97 @@ async function processTelegramReplies() {
 }
 
 /**
+ * Auto-Backtest: evaluate expired observed/taken signals against historical price data.
+ * For each un-evaluated signal that has expired:
+ *   1. Fetch 1H candles from signalTime → signalTime + 48H
+ *   2. Walk candles checking if SL or TP1 was hit first
+ *   3. Mark result + simulated PnL in trade log
+ * Called by the "Auto-Backtest" button in the Backtest page.
+ */
+async function autoEvaluateExpiredSignals() {
+  const statusEl = document.getElementById('backtest-status');
+
+  // Find signals: expired (expiresAt in past) AND no result yet
+  const toEvaluate = State.trades.filter(t =>
+    (t.status === 'observed' || t.status === 'taken') &&
+    t.result === null &&
+    t.expiresAt != null &&
+    t.expiresAt < Date.now()
+  );
+
+  if (toEvaluate.length === 0) {
+    if (statusEl) statusEl.innerText = 'No expired signals to evaluate.';
+    triggerAlert('Auto-Backtest: no expired signals found.', 'info');
+    return;
+  }
+
+  let evaluated = 0;
+  let errors = 0;
+
+  for (let i = 0; i < toEvaluate.length; i++) {
+    const trade = toEvaluate[i];
+    if (statusEl) statusEl.innerText = `Evaluating ${i + 1} / ${toEvaluate.length}…`;
+
+    try {
+      // Fetch 1H candles in 48H window starting at signal time
+      const startTime = trade.signalTime;
+      const endTime   = Math.min(trade.signalTime + 48 * 3600000, Date.now() - 60000);
+      const klines    = await fetchKlinesRange(trade.pair, '1h', startTime, endTime);
+
+      const isLong   = trade.direction === 'LONG';
+      let result     = null;
+      let exitPrice  = null;
+
+      // Walk candles chronologically — first hit wins
+      for (const candle of klines) {
+        const high = candle[2];
+        const low  = candle[3];
+
+        const slHit  = isLong ? low  <= trade.stopLoss : high >= trade.stopLoss;
+        const tp1Hit = isLong ? high >= trade.tp1      : low  <= trade.tp1;
+
+        if (slHit && tp1Hit) {
+          // Both in same candle — assume SL hit first (conservative)
+          result    = 'loss';
+          exitPrice = trade.stopLoss;
+          break;
+        }
+        if (tp1Hit) { result = 'win';  exitPrice = trade.tp1;      break; }
+        if (slHit)  { result = 'loss'; exitPrice = trade.stopLoss; break; }
+      }
+
+      if (result) {
+        // Simulated PnL using current risk settings
+        const riskAmount   = (State.settings.accountSize || 1000) * ((State.settings.riskPercent || 1) / 100);
+        const slDistance   = Math.abs(trade.entryPrice - trade.stopLoss);
+        const positionSize = slDistance > 0 ? riskAmount / slDistance : 0;
+        const rawPnl       = isLong
+          ? (exitPrice - trade.entryPrice) * positionSize
+          : (trade.entryPrice - exitPrice) * positionSize;
+
+        updateTrade(trade.id, {
+          result,
+          exitPrice:       parseFloat(exitPrice.toFixed(4)),
+          pnlUSDT:         parseFloat(rawPnl.toFixed(2)),
+          positionSize:    parseFloat(positionSize.toFixed(6)),
+          backtestEvaluated: true,
+          notes: `Auto-backtested: ${result.toUpperCase()} — TP1/SL scan on 1H candles`
+        });
+        evaluated++;
+      }
+    } catch (e) {
+      console.warn(`Backtest eval failed for ${trade.pair}:`, e.message);
+      errors++;
+    }
+  }
+
+  State.trades = loadTrades();
+  if (statusEl) statusEl.innerText = `Done: ${evaluated} evaluated${errors ? `, ${errors} failed` : ''}.`;
+  triggerAlert(`Auto-Backtest complete: ${evaluated} of ${toEvaluate.length} signals evaluated.`, 'info');
+  renderBacktestStats(State.trades);
+}
+
+/**
  * Market Scanner — render a grid of all pairs with current signal status.
  * Uses cached allAnalysis where available; fetches fresh for uncached pairs.
  */
@@ -1047,6 +1140,18 @@ async function init() {
     const scannerRefreshBtn = document.getElementById('scanner-refresh-btn');
     if (scannerRefreshBtn) {
       scannerRefreshBtn.addEventListener('click', renderMarketScanner);
+    }
+
+    // Auto-Backtest button — evaluates expired signals against historical kline data
+    const runBacktestBtn = document.getElementById('run-backtest-btn');
+    if (runBacktestBtn) {
+      runBacktestBtn.addEventListener('click', async () => {
+        runBacktestBtn.disabled = true;
+        runBacktestBtn.innerHTML = '<i class="ti ti-loader"></i> Running…';
+        await autoEvaluateExpiredSignals();
+        runBacktestBtn.disabled = false;
+        runBacktestBtn.innerHTML = '<i class="ti ti-player-play"></i> Auto-Backtest';
+      });
     }
 
     // Dismiss loss limit overlay button

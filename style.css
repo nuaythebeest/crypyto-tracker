@@ -821,8 +821,16 @@ h1, h2, h3, h4, .logo-text, .metric-value, .tf-btn {
   background-color: var(--bg-surface);
   border: 1px solid var(--border-color);
   border-radius: 12px;
-  overflow: hidden;
+  overflow-x: auto;          /* horizontal scroll for wide table */
+  overflow-y: visible;       /* let page handle vertical scroll */
   box-shadow: var(--shadow-sm);
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Trade Log and Backtest pages: allow growing beyond viewport so #main-area can scroll */
+#page-tradelog,
+#page-backtest {
+  height: auto;
 }
 
 .data-table {

@@ -10,8 +10,10 @@
 export function renderBacktestStats(trades) {
   // All signals fired (everything except 'active' status edge cases)
   const allSignals = trades.filter(t => t.status !== 'active');
+  // All signals with an outcome: manually closed OR auto-backtested observed signals
+  const evaluatedSignals = allSignals.filter(t => t.result !== null);
+  // Taken trades: manually entered positions (for capture rate)
   const takenTrades = trades.filter(t => t.status === 'taken');
-  const closedTrades = takenTrades.filter(t => t.result !== null);
 
   // 1. Calculate Metric Cards
   const totalTaken = takenTrades.length;
@@ -20,44 +22,46 @@ export function renderBacktestStats(trades) {
   let avgRR = 0;
   let totalPnL = 0;
 
-  // Wins = taken trades with actual win result
-  const wins = closedTrades.filter(t => t.result === 'win' || t.result === 'partial').length;
+  // Wins = any evaluated signal (taken OR auto-backtested observed) with win/partial result
+  const wins = evaluatedSignals.filter(t => t.result === 'win' || t.result === 'partial').length;
 
   if (totalSignals > 0) {
-    // Effective win rate: wins ÷ ALL signals fired (observed/skipped count as non-wins)
+    // Effective win rate: wins ÷ ALL signals fired (unevaluated/skipped = non-wins)
     winRate = (wins / totalSignals) * 100;
   }
 
-  if (closedTrades.length > 0) {
-    totalPnL = closedTrades.reduce((acc, t) => acc + (t.pnlUSDT || 0), 0);
+  if (evaluatedSignals.length > 0) {
+    totalPnL = evaluatedSignals.reduce((acc, t) => acc + (t.pnlUSDT || 0), 0);
 
-    const winningTrades = closedTrades.filter(t => (t.result === 'win' || t.result === 'partial') && t.pnlUSDT > 0);
-    if (winningTrades.length > 0) {
-      const rrSum = winningTrades.reduce((sum, t) => {
+    const winningSignals = evaluatedSignals.filter(t => (t.result === 'win' || t.result === 'partial') && t.pnlUSDT > 0);
+    if (winningSignals.length > 0) {
+      const rrSum = winningSignals.reduce((sum, t) => {
         const risk = t.riskAmount || 60;
         return sum + (t.pnlUSDT / risk);
       }, 0);
-      avgRR = rrSum / winningTrades.length;
+      avgRR = rrSum / winningSignals.length;
     } else {
       avgRR = 3.0;
     }
   }
 
-  // Capture rate
+  // Capture rate = manually taken / all signals fired
   const captureRate = totalSignals > 0 ? ((totalTaken / totalSignals) * 100).toFixed(0) : 0;
+  // Evaluation rate = signals with outcomes / all signals
+  const evalRate = totalSignals > 0 ? ((evaluatedSignals.length / totalSignals) * 100).toFixed(0) : 0;
 
   // Populate Metric DOM Elements
-  document.getElementById('backtest-winrate').innerText = totalSignals > 0 ? `${winRate.toFixed(1)}%` : '--%';
-  document.getElementById('backtest-avg-rr').innerText = closedTrades.length > 0 ? `1 : ${avgRR.toFixed(1)}` : '1 : --';
+  document.getElementById('backtest-winrate').innerText = evaluatedSignals.length > 0 ? `${winRate.toFixed(1)}%` : '--%';
+  document.getElementById('backtest-avg-rr').innerText = evaluatedSignals.length > 0 ? `1 : ${avgRR.toFixed(1)}` : '1 : --';
 
   const pnlEl = document.getElementById('backtest-pnl');
   pnlEl.innerText = `${totalPnL >= 0 ? '+' : ''}$${totalPnL.toFixed(2)}`;
   pnlEl.className = `metric-value ${totalPnL >= 0 ? 'success-text' : 'danger-text'}`;
 
   const totalEl = document.getElementById('backtest-total');
-  totalEl.innerText = totalSignals > 0 ? `${totalTaken} / ${totalSignals}` : '0 / 0';
+  totalEl.innerText = totalSignals > 0 ? `${wins} / ${totalSignals}` : '0 / 0';
   const captureSub = document.getElementById('backtest-capture-sub');
-  if (captureSub) captureSub.innerText = `Capture Rate: ${captureRate}% (Taken / Fired)`;
+  if (captureSub) captureSub.innerText = `${evalRate}% evaluated · ${captureRate}% taken (${evaluatedSignals.length} of ${totalSignals} signals)`;
 
   // 2. Render sequence dots (Last 20 all-signal history: taken+observed+skipped)
   const dotsContainer = document.getElementById('backtest-dots-container');
@@ -73,11 +77,16 @@ export function renderBacktestStats(trades) {
         let titleStr = `${trade.pair} ${trade.direction} — ${trade.status}`;
 
         if (trade.status === 'skipped') { dotClass = 'skipped'; label = '—'; }
-        else if (trade.status === 'taken') {
-          if (trade.result === 'win') { dotClass = 'win'; label = 'W'; titleStr += ` | +$${trade.pnlUSDT?.toFixed(2)}`; }
-          else if (trade.result === 'loss') { dotClass = 'loss'; label = 'L'; titleStr += ` | -$${Math.abs(trade.pnlUSDT || 0).toFixed(2)}`; }
-          else if (trade.result === 'partial') { dotClass = 'partial'; label = 'P'; }
-          else { dotClass = 'open'; label = 'O'; }
+        else if (trade.result === 'win') {
+          dotClass = 'win'; label = 'W';
+          titleStr += `${trade.backtestEvaluated ? ' [BT]' : ''} | +$${trade.pnlUSDT?.toFixed(2)}`;
+        } else if (trade.result === 'loss') {
+          dotClass = 'loss'; label = 'L';
+          titleStr += `${trade.backtestEvaluated ? ' [BT]' : ''} | -$${Math.abs(trade.pnlUSDT || 0).toFixed(2)}`;
+        } else if (trade.result === 'partial') {
+          dotClass = 'partial'; label = 'P';
+        } else if (trade.status === 'taken' && !trade.result) {
+          dotClass = 'open'; label = 'O';
         }
 
         return `<span class="dot-stat ${dotClass}" title="${titleStr}">${label}</span>`;
@@ -101,8 +110,8 @@ export function renderBacktestStats(trades) {
   const allSortedForCurve = [...allSignals].sort((a, b) => (a.signalTime || 0) - (b.signalTime || 0));
   drawEquityCurve(allSortedForCurve);
 
-  // 4. Render Confidence Score Distribution Bars (all signals, not just taken)
-  renderConfidenceDistribution(allSignals, closedTrades);
+  // 4. Render Confidence Score Distribution Bars (all signals, wins from evaluated)
+  renderConfidenceDistribution(allSignals, evaluatedSignals);
 }
 
 /**

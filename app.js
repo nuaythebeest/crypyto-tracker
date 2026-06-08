@@ -172,9 +172,10 @@ async function runAnalysisForPair(symbol) {
     const klines1d = await fetchKlines(symbol, '1d', 200);
     const klines4h = await fetchKlines(symbol, '4h', 200);
     const klines1h = await fetchKlines(symbol, '1h', 200);
+    const klines1w = await fetchKlines(symbol, '1w', 30);  // weekly for macro trend filter
     const fundingData = await fetchFundingRate(symbol);
 
-    const analysis = analyzeMarket(symbol, { klines1d, klines4h, klines1h }, fundingData.fundingRatePct);
+    const analysis = analyzeMarket(symbol, { klines1d, klines4h, klines1h, klines1w }, fundingData.fundingRatePct);
     
     // Preserve signal identity across runs if continuous
     const prevAnalysis = State.allAnalysis[symbol];
@@ -342,18 +343,18 @@ async function refreshActivePair() {
         }
 
         renderSignalCard(
-          isLong ? activeSignal : null, 
-          'LONG', 
-          State.settings.defaultLeverage, 
-          analysis.isFundingBlocked && analysis.dailyDirection === 'LONG' ? analysis.blockReason : warningText,
+          isLong ? activeSignal : null,
+          'LONG',
+          State.settings.defaultLeverage,
+          analysis.isSignalBlocked ? analysis.blockReason : warningText,
           { onTake: openTakeTradeModal, onSkip: handleSkipSignal }
         );
 
         renderSignalCard(
-          isShort ? activeSignal : null, 
-          'SHORT', 
-          State.settings.defaultLeverage, 
-          analysis.isFundingBlocked && analysis.dailyDirection === 'SHORT' ? analysis.blockReason : warningText,
+          isShort ? activeSignal : null,
+          'SHORT',
+          State.settings.defaultLeverage,
+          analysis.isSignalBlocked ? analysis.blockReason : warningText,
           { onTake: openTakeTradeModal, onSkip: handleSkipSignal }
         );
 
@@ -925,6 +926,7 @@ async function renderMarketScanner() {
     const modeBadgeClass = analysis.marketMode === 'TRENDING' ? 'badge-blue' : (analysis.marketMode === 'RANGING' ? 'badge-yellow' : 'badge-grey');
     const trendArrow = analysis.dailyDirection === 'LONG' ? '↑' : (analysis.dailyDirection === 'SHORT' ? '↓' : '~');
     const rsi4h = Math.round(analysis.indicatorValues?.rsi4h ?? 0);
+    const weeklyIcon = analysis.weeklyTrend === 'BULL' ? '🟢W' : (analysis.weeklyTrend === 'BEAR' ? '🔴W' : '⬜W');
 
     return `
       <div class="scanner-card" data-pair="${pair}">
@@ -936,7 +938,7 @@ async function renderMarketScanner() {
         <div class="scanner-signal">${signalHTML}</div>
         <div class="scanner-meta">
           <span class="badge ${modeBadgeClass}" style="font-size:0.65rem;">${analysis.marketMode}</span>
-          <span class="scanner-indicators">RSI ${rsi4h} · ${trendArrow} Daily</span>
+          <span class="scanner-indicators">RSI ${rsi4h} · ${trendArrow} Daily · ${weeklyIcon}</span>
         </div>
       </div>
     `;

@@ -25,7 +25,7 @@ import { detectBOS } from './market-structure.js';
  * @returns {Object} Analysis result containing status, signals, and current indicator values
  */
 export function analyzeMarket(symbol, data, fundingRatePct) {
-  const { klines1d, klines4h, klines1h } = data;
+  const { klines1d, klines4h, klines1h, klines1w } = data;
   
   if (!klines1d || klines1d.length < 200 || 
       !klines4h || klines4h.length < 200 || 
@@ -59,6 +59,22 @@ export function analyzeMarket(symbol, data, fundingRatePct) {
   
   const oneHRSI = calculateRSI(oneHCloses, 14);
   const oneHBB = calculateBollingerBands(oneHCloses, 20, 2);
+
+  // 4. Process Weekly Timeframe Indicators — Macro Trend Filter (Fix D)
+  // Weekly EMA20: if price above rising EMA20 = bull macro (block shorts), vice versa
+  let weeklyTrend = 'NEUTRAL';
+  let weeklyBull = false;
+  let weeklyBear = false;
+  if (klines1w && klines1w.length >= 21) {
+    const weeklyCloses = klines1w.map(c => c[4]);
+    const weeklyEMA20arr = calculateEMA(weeklyCloses, 20);
+    const lastWkIdx = weeklyEMA20arr.length - 1;
+    weeklyBull = weeklyCloses[lastWkIdx] > weeklyEMA20arr[lastWkIdx] &&
+                 weeklyEMA20arr[lastWkIdx] > weeklyEMA20arr[lastWkIdx - 1];
+    weeklyBear = weeklyCloses[lastWkIdx] < weeklyEMA20arr[lastWkIdx] &&
+                 weeklyEMA20arr[lastWkIdx] < weeklyEMA20arr[lastWkIdx - 1];
+    weeklyTrend = weeklyBull ? 'BULL' : (weeklyBear ? 'BEAR' : 'NEUTRAL');
+  }
 
   // Get current indices
   const idx1d = dailyCloses.length - 1;
@@ -209,7 +225,7 @@ export function analyzeMarket(symbol, data, fundingRatePct) {
   // Hard Block: Funding Rate Filter
   let isFundingBlocked = false;
   let blockReason = '';
-  
+
   if (alignedDirection === 'LONG' && fundingRatePct > 0.05) {
     isFundingBlocked = true;
     blockReason = 'Signal suppressed — funding rate extreme (market overleveraged longs)';
@@ -218,14 +234,52 @@ export function analyzeMarket(symbol, data, fundingRatePct) {
     blockReason = 'Signal suppressed — funding rate extreme (market overleveraged shorts)';
   }
 
+  // Hard Block: Weekly Macro Trend — prevent counter-trend signals (Fix D)
+  // SHORT in weekly bull market = high liquidation risk. LONG in weekly bear = same.
+  let isWeeklyBlocked = false;
+  if (!isFundingBlocked) {
+    if (weeklyBull && alignedDirection === 'SHORT') {
+      isWeeklyBlocked = true;
+      blockReason = `Signal suppressed — weekly trend BULLISH (macro uptrend, shorts blocked)`;
+    } else if (weeklyBear && alignedDirection === 'LONG') {
+      isWeeklyBlocked = true;
+      blockReason = `Signal suppressed — weekly trend BEARISH (macro downtrend, longs blocked)`;
+    }
+  }
+
+  // Hard Block: Daily RSI Regime Gate — stop signals against macro momentum (Fix B)
+  // SHORT blocked if daily RSI > 58 (bullish momentum), LONG blocked if daily RSI < 42 (bearish momentum)
+  let isRsiBlocked = false;
+  if (!isFundingBlocked && !isWeeklyBlocked) {
+    if (alignedDirection === 'SHORT' && currRsi1d > 58) {
+      isRsiBlocked = true;
+      blockReason = `Signal suppressed — daily RSI ${Math.round(currRsi1d)} > 58 (momentum too bullish for short)`;
+    } else if (alignedDirection === 'LONG' && currRsi1d < 42) {
+      isRsiBlocked = true;
+      blockReason = `Signal suppressed — daily RSI ${Math.round(currRsi1d)} < 42 (momentum too bearish for long)`;
+    }
+  }
+
+  // Hard Block: ADX Minimum — no signals in choppy/ranging markets (Fix C)
+  // ADX < 18 = trend not established, EMA crossovers unreliable = too many false signals
+  let isAdxBlocked = false;
+  if (!isFundingBlocked && !isWeeklyBlocked && !isRsiBlocked && currAdx4h < 18) {
+    isAdxBlocked = true;
+    blockReason = `Signal suppressed — ADX ${Math.round(currAdx4h)} < 18 (market too choppy, trend not established)`;
+  }
+
+  // Unified block flag — any single block stops signal generation
+  const isSignalBlocked = isFundingBlocked || isWeeklyBlocked || isRsiBlocked || isAdxBlocked;
+
   // Build the signal object if rules met
   let activeSignal = null;
-  
-  if (alignedDirection && !isFundingBlocked) {
+
+  if (alignedDirection && !isSignalBlocked) {
     const evaluation = alignedDirection === 'LONG' ? longEvaluation : shortEvaluation;
-    
-    // Confidence score must be >= 70% to trigger signal display
-    if (evaluation.total >= 70) {
+
+    // Confidence score must be >= 77% to trigger signal (raised from 70 — Fix A)
+    // Lower-confidence signals have shown high false-positive rate, especially counter-trend.
+    if (evaluation.total >= 77) {
       // Calculate SL (1.5x ATR-14 on 4H)
       // LONG: Stop Loss = Entry - (1.5 * ATR)
       // SHORT: Stop Loss = Entry + (1.5 * ATR)
@@ -313,7 +367,12 @@ export function analyzeMarket(symbol, data, fundingRatePct) {
     isTrendAligned,
     dailyDirection,
     fourHDirection,
+    weeklyTrend,
     isFundingBlocked,
+    isWeeklyBlocked,
+    isRsiBlocked,
+    isAdxBlocked,
+    isSignalBlocked,  // unified flag — true if any hard block fired
     blockReason,
     scores: {
       long: longEvaluation.total,

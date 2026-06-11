@@ -396,3 +396,20 @@ Set these in Railway → Variables:
 | NEW | `engine/backtester.js`, `ui/engine-backtest-ui.js`, `scripts/run-backtest.mjs`, `scripts/analyze-backtest.mjs` |
 | MODIFIED | `engine/signal-engine.js` (candidateMode, ADX 25, TP 1.0/2.0/3.0R) |
 | MODIFIED | `risk/position-sizing.js`, `ui/calculator.js`, `app.js`, `index.html`, `style.css` (liquidation guard, backtest UI) |
+
+### 35. A+ Setup Research — Result: Baseline IS the A+ Tier (TP1 → 0.8R)
+- **Goal**: find a hypothesis-driven signal subset with OOS win rate ≥ 65-70% (accept low frequency). Validation bar: resolved OOS n ≥ 60, Wilson 95% lower bound ≥ 60%, expectancy − 0.04R fees > 0, all 4 sequential OOS windows ≥ 50%, no pair > 50% of trades.
+- **Method**: backtester v2 records 12 new features per candidate (BTC daily/4H-ADX/weekly context via BTC-first simulation pass, bars-since-4H-EMA50-cross, directional extension vs 4H EMA50 + daily EMA20 in ATR units, ATR percentile 90d, BB-width percentile 90d, continuous 4H/1H RSI, UTC hour, weekday). 17 fixed a-priori feature conditions ranked on first 6 months only; combos (max 3 conditions) validated on last 6 months in 4 sequential windows. `scripts/aplus-research.mjs`.
+- **Measured findings**:
+  - Engine is a **momentum-continuation** system: "extended >1.5 ATR past 4H EMA50" (+6.2% lift) and "mature trend" (+4.0%) ranked top in train; pullback/fresh-trend/RSI-room hypotheses all NEGATIVE (pullback −24.9%).
+  - All 15 tested combo rules FAILED the bar — either train/OOS regime flips (A-G) or OOS Wilson LB < 60% (H-N momentum family, train 67-72% that didn't generalize).
+  - **The full baseline signal set itself passed every criterion** at TP 0.8R: OOS 256 resolved, 66.4% win, Wilson LB 60.4%, net +0.106R after fees, windows 53/78/51/85%, max pair share 23%. No subset beat it — extra conditions shrank samples without adding robust edge.
+- **Applied**: TP1 0.8R (was 1.0R) — wins on win rate in BOTH periods (train 59.3% vs 53.5%; OOS 66.4% vs 60.9%), net-positive after fees in both. TP2 2R / TP3 3R unchanged. No A+ badge shipped: every signal already is the validated tier; a separating badge would imply an edge the data does not support.
+- **Honest caveats**: net expectancy at 1.0R was slightly higher in OOS (+0.123R vs +0.106R) — 0.8R chosen because the stated objective is win rate with positive expectancy, not max expectancy. 66% is an OOS estimate, not a promise; Wilson floor is 60%.
+
+### Files Changed
+| Action | File |
+|---|---|
+| MODIFIED | `engine/backtester.js` (v2 features, BTC context pass, LIVE_CONFIG tpR 0.8) |
+| MODIFIED | `engine/signal-engine.js` (TP1 0.8R) |
+| NEW | `scripts/aplus-research.mjs` |

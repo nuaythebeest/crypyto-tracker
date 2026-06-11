@@ -299,9 +299,10 @@ export function analyzeMarket(symbol, data, fundingRatePct, options = {}) {
       const slDistancePct = Math.abs(entryPrice - stopLoss) / entryPrice * 100;
       const slDistancePrice = Math.abs(entryPrice - stopLoss);
 
-      // Take Profits — TP1 at 1.0R (backtested: 55-58% hit rate with positive expectancy
-      // in both train and holdout periods; the old 1.5R target failed the holdout period)
-      const tp1 = alignedDirection === 'LONG' ? entryPrice + (slDistancePrice * 1.0) : entryPrice - (slDistancePrice * 1.0);
+      // Take Profits — TP1 at 0.8R: highest validated win rate (train 59%, OOS 66%,
+      // Wilson 95% LB 60%, net-positive after fees). A+ subset research found NO
+      // signal subset that beats this full set — extra conditions reduced robustness.
+      const tp1 = alignedDirection === 'LONG' ? entryPrice + (slDistancePrice * 0.8) : entryPrice - (slDistancePrice * 0.8);
       const tp2 = alignedDirection === 'LONG' ? entryPrice + (slDistancePrice * 2.0) : entryPrice - (slDistancePrice * 2.0);
       const tp3 = alignedDirection === 'LONG' ? entryPrice + (slDistancePrice * 3.0) : entryPrice - (slDistancePrice * 3.0);
 

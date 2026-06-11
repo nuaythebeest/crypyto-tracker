@@ -13,6 +13,7 @@
  */
 
 import { analyzeMarket } from './signal-engine.js';
+import { calculateEMA, calculateATR, calculateBollingerBands } from './indicators.js';
 
 const SPOT_BASE = 'https://api.binance.com/api/v3';
 const FUT_BASE = 'https://fapi.binance.com/fapi/v1';
@@ -33,7 +34,7 @@ export const LIVE_CONFIG = {
   weeklyOn: true,   // weekly EMA20 macro filter
   fundOn: true,     // funding-rate extreme filter
   slMult: 1.5,
-  tpR: 1.0
+  tpR: 0.8
 };
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -124,6 +125,41 @@ function windowWithPartial(klines, completedCount, klines1h, i1h, size) {
   return partial ? [...base, partial] : base;
 }
 
+/** Percentile rank (0-100) of the last value within a trailing window of a series. */
+function trailingPercentile(series, idx, window) {
+  const val = series[idx];
+  if (val == null) return null;
+  let below = 0, count = 0;
+  for (let k = Math.max(0, idx - window + 1); k <= idx; k++) {
+    if (series[k] == null) continue;
+    count++;
+    if (series[k] <= val) below++;
+  }
+  return count > 0 ? Math.round((below / count) * 100) : null;
+}
+
+/** Bars since the close↔EMA50 relationship last flipped (trend freshness on 4H). */
+function barsSinceEmaCross(closes, ema, lastIdx, cap = 200) {
+  const side = Math.sign(closes[lastIdx] - ema[lastIdx]);
+  let bars = 0;
+  for (let j = lastIdx - 1; j >= 0 && bars < cap; j--) {
+    if (Math.sign(closes[j] - ema[j]) !== side) break;
+    bars++;
+  }
+  return bars;
+}
+
+/** Binary search latest context entry with t ≤ T. */
+function contextAt(context, T) {
+  let lo = 0, hi = context.length - 1, ans = null;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (context[mid].t <= T) { ans = context[mid]; lo = mid + 1; }
+    else hi = mid - 1;
+  }
+  return ans;
+}
+
 /**
  * Grade one candidate against the full SL × TP outcome grid by walking forward
  * on 1H candles to the first touch. Conservative: SL checked before TP, so a candle
@@ -176,6 +212,17 @@ export async function simulatePair(symbol, data, funding, opts = {}) {
   const suppressUntil = {}; // direction → time (mirror live 3H same-signal window)
   let p4 = 0, p1d = 0, p1w = 0, pf = 0;
 
+  // Precomputed feature series over FULL history (all causal — value at i uses bars ≤ i)
+  const closes4hAll = klines4h.map(c => c[4]);
+  const ema50_4hAll = calculateEMA(closes4hAll, 50);
+  const atr4hAll = calculateATR(klines4h.map(c => c[2]), klines4h.map(c => c[3]), closes4hAll, 14);
+  const bb1hAll = calculateBollingerBands(klines1h.map(c => c[4]), 20, 2);
+  const bbw1hAll = bb1hAll.middle.map((m, k) =>
+    m ? (bb1hAll.upper[k] - bb1hAll.lower[k]) / m : null);
+
+  const btcContext = opts.btcContext || null;   // BTC regime context for alt pairs
+  const contextOut = opts.contextOut || null;   // capture own per-bar context (BTC pass)
+
   for (let i = 0; i < klines1h.length; i++) {
     const T = klines1h[i][6]; // bar close time
 
@@ -209,12 +256,52 @@ export async function simulatePair(symbol, data, funding, opts = {}) {
 
     if (opts.onProgress && i % 500 === 0) opts.onProgress(symbol, i, klines1h.length);
 
+    // Capture per-bar regime context (used as BTC context by alt-pair simulations)
+    if (contextOut) {
+      contextOut.push({
+        t: T,
+        dir: analysis.dailyDirection,
+        adx: Math.round(analysis.indicatorValues.adx4h || 0),
+        wk: analysis.weeklyTrend
+      });
+    }
+
     const sig = analysis.signal;
     if (!sig) continue;
     if ((suppressUntil[sig.direction] ?? 0) > T) continue;
     suppressUntil[sig.direction] = T + 3 * H1;
 
+    // ---- Hypothesis features (computed only when a candidate fires) ----
+    const isLong = sig.direction === 'LONG';
+    const px = klines1h[i][4];
+    const c4 = p4 - 1; // last completed 4H bar index
+    const atrNow = atr4hAll[c4] || sig.atr4h;
+
+    // Directional extension: how far price has run beyond the EMA in trade direction (ATR units).
+    // LONG above EMA = positive; SHORT below EMA = positive. Negative = pullback through EMA.
+    const ext4h = atrNow > 0
+      ? (isLong ? px - ema50_4hAll[c4] : ema50_4hAll[c4] - px) / atrNow : null;
+    const ext1d = atrNow > 0 && analysis.indicatorValues.ema20_1d
+      ? (isLong ? px - analysis.indicatorValues.ema20_1d
+                : analysis.indicatorValues.ema20_1d - px) / atrNow : null;
+
+    const btcCtx = btcContext ? contextAt(btcContext, T) : null;
+    const dt = new Date(T);
+
     candidates.push({
+      // -- features v2 --
+      bDir: btcCtx ? btcCtx.dir : analysis.dailyDirection,   // BTC daily direction (own for BTC)
+      bAdx: btcCtx ? btcCtx.adx : Math.round(analysis.indicatorValues.adx4h || 0),
+      bWk: btcCtx ? btcCtx.wk : analysis.weeklyTrend,
+      cross4h: barsSinceEmaCross(closes4hAll, ema50_4hAll, c4),  // trend freshness (4H bars)
+      ext4h: ext4h != null ? parseFloat(ext4h.toFixed(2)) : null,
+      ext1d: ext1d != null ? parseFloat(ext1d.toFixed(2)) : null,
+      atrPctile: trailingPercentile(atr4hAll, c4, 540),           // vs trailing ~90 days
+      bbwPctile: trailingPercentile(bbw1hAll, i, 2160),           // vs trailing ~90 days
+      rsi4h: parseFloat((analysis.indicatorValues.rsi4h ?? 0).toFixed(1)),
+      rsi1h: parseFloat((analysis.indicatorValues.rsi1h ?? 0).toFixed(1)),
+      hour: dt.getUTCHours(),
+      dow: dt.getUTCDay(),
       pair: symbol,
       dir: sig.direction,
       t: T,
@@ -256,7 +343,12 @@ export async function runFullBacktest(pairs, opts = {}) {
   const status = opts.onStatus || (() => {});
 
   const all = [];
-  for (const pair of pairs) {
+  // BTC first — its per-bar regime context feeds the alt-pair feature set
+  const ordered = [...pairs].sort((a, b) =>
+    (a === 'BTCUSDT' ? -1 : 0) - (b === 'BTCUSDT' ? -1 : 0));
+  const btcContext = [];
+
+  for (const pair of ordered) {
     status(`Fetching ${pair} history…`);
     const [klines1h, klines4h, klines1d, klines1w, funding] = [
       await fetchKlinesPaged(pair, '1h', fetchStart, endTime, n => status(`Fetching ${pair} 1H… ${n} candles`)),
@@ -267,6 +359,7 @@ export async function runFullBacktest(pairs, opts = {}) {
     ];
 
     status(`Simulating ${pair} (${klines1h.length} bars)…`);
+    const isBtc = pair === 'BTCUSDT';
     const cands = await simulatePair(pair,
       { klines1h, klines4h, klines1d, klines1w },
       funding,
@@ -274,6 +367,8 @@ export async function runFullBacktest(pairs, opts = {}) {
         simStartTime,
         minScore: opts.minScore ?? 60,
         horizonBars: opts.horizonBars ?? 48,
+        contextOut: isBtc ? btcContext : null,
+        btcContext: isBtc ? null : btcContext,
         onProgress: (sym, i, total) => status(`Simulating ${sym}… ${Math.round(100 * i / total)}%`)
       });
     all.push(...cands);

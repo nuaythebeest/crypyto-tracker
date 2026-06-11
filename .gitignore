@@ -4,3 +4,5 @@ node_modules/
 *.log
 .htpasswd
 config.js
+backtest-results.json
+backtest-report.txt

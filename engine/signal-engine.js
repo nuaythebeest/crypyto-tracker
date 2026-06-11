@@ -17,14 +17,21 @@ import {
 import { detectDivergence } from './divergence.js';
 import { detectBOS } from './market-structure.js';
 
+// Live signal threshold — tuned from 12-month backtest (see CHANGE.md)
+export const SIGNAL_MIN_SCORE = 77;
+
 /**
  * Run complete analysis for a pair
  * @param {string} symbol - e.g. 'BTCUSDT'
- * @param {Object} data - Candle data: { klines1d, klines4h, klines1h }
+ * @param {Object} data - Candle data: { klines1d, klines4h, klines1h, klines1w }
  * @param {number} fundingRatePct - Current funding rate as percentage (e.g. 0.012 for 0.012%)
+ * @param {Object} [options] - { candidateMode, minScore }
+ *   candidateMode: build the signal even when hard blocks fire (block flags still reported) and
+ *   use options.minScore (default 60) instead of the live threshold. Used by the backtester to
+ *   measure filter effectiveness post-hoc. Live callers omit options — behavior unchanged.
  * @returns {Object} Analysis result containing status, signals, and current indicator values
  */
-export function analyzeMarket(symbol, data, fundingRatePct) {
+export function analyzeMarket(symbol, data, fundingRatePct, options = {}) {
   const { klines1d, klines4h, klines1h, klines1w } = data;
   
   if (!klines1d || klines1d.length < 200 || 
@@ -260,12 +267,13 @@ export function analyzeMarket(symbol, data, fundingRatePct) {
     }
   }
 
-  // Hard Block: ADX Minimum — no signals in choppy/ranging markets (Fix C)
-  // ADX < 18 = trend not established, EMA crossovers unreliable = too many false signals
+  // Hard Block: ADX Minimum — no signals outside established trends
+  // Backtested 12mo/5 pairs: ADX ≥ 25 was the only filter that improved BOTH the
+  // train (9mo) and holdout (3mo) periods. Below 25, expectancy degrades sharply.
   let isAdxBlocked = false;
-  if (!isFundingBlocked && !isWeeklyBlocked && !isRsiBlocked && currAdx4h < 18) {
+  if (!isFundingBlocked && !isWeeklyBlocked && !isRsiBlocked && currAdx4h < 25) {
     isAdxBlocked = true;
-    blockReason = `Signal suppressed — ADX ${Math.round(currAdx4h)} < 18 (market too choppy, trend not established)`;
+    blockReason = `Signal suppressed — ADX ${Math.round(currAdx4h)} < 25 (trend not established; backtest shows negative edge below 25)`;
   }
 
   // Unified block flag — any single block stops signal generation
@@ -274,12 +282,12 @@ export function analyzeMarket(symbol, data, fundingRatePct) {
   // Build the signal object if rules met
   let activeSignal = null;
 
-  if (alignedDirection && !isSignalBlocked) {
+  const minScore = options.candidateMode ? (options.minScore ?? 60) : SIGNAL_MIN_SCORE;
+
+  if (alignedDirection && (options.candidateMode || !isSignalBlocked)) {
     const evaluation = alignedDirection === 'LONG' ? longEvaluation : shortEvaluation;
 
-    // Confidence score must be >= 77% to trigger signal (raised from 70 — Fix A)
-    // Lower-confidence signals have shown high false-positive rate, especially counter-trend.
-    if (evaluation.total >= 77) {
+    if (evaluation.total >= minScore) {
       // Calculate SL (1.5x ATR-14 on 4H)
       // LONG: Stop Loss = Entry - (1.5 * ATR)
       // SHORT: Stop Loss = Entry + (1.5 * ATR)
@@ -291,10 +299,11 @@ export function analyzeMarket(symbol, data, fundingRatePct) {
       const slDistancePct = Math.abs(entryPrice - stopLoss) / entryPrice * 100;
       const slDistancePrice = Math.abs(entryPrice - stopLoss);
 
-      // Take Profits
-      const tp1 = alignedDirection === 'LONG' ? entryPrice + (slDistancePrice * 1.5) : entryPrice - (slDistancePrice * 1.5);
-      const tp2 = alignedDirection === 'LONG' ? entryPrice + (slDistancePrice * 3.0) : entryPrice - (slDistancePrice * 3.0);
-      const tp3 = alignedDirection === 'LONG' ? entryPrice + (slDistancePrice * 5.0) : entryPrice - (slDistancePrice * 5.0);
+      // Take Profits — TP1 at 1.0R (backtested: 55-58% hit rate with positive expectancy
+      // in both train and holdout periods; the old 1.5R target failed the holdout period)
+      const tp1 = alignedDirection === 'LONG' ? entryPrice + (slDistancePrice * 1.0) : entryPrice - (slDistancePrice * 1.0);
+      const tp2 = alignedDirection === 'LONG' ? entryPrice + (slDistancePrice * 2.0) : entryPrice - (slDistancePrice * 2.0);
+      const tp3 = alignedDirection === 'LONG' ? entryPrice + (slDistancePrice * 3.0) : entryPrice - (slDistancePrice * 3.0);
 
       const tp1Pct = Math.abs(tp1 - entryPrice) / entryPrice * 100;
       const tp2Pct = Math.abs(tp2 - entryPrice) / entryPrice * 100;
@@ -326,7 +335,7 @@ export function analyzeMarket(symbol, data, fundingRatePct) {
         tp3: parseFloat(tp3.toFixed(4)),
         tp3Pct: parseFloat(tp3Pct.toFixed(2)),
         atr4h: parseFloat(currAtr4h.toFixed(4)),
-        riskReward: 3.0, // fixed RR ratio at TP2
+        riskReward: 2.0, // RR ratio at TP2 (2R)
         indicators: {
           daily: {
             ema200: currPrice > dailyEMA200[idx1d] ? 'above' : 'below',

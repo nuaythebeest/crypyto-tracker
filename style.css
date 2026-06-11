@@ -1260,6 +1260,20 @@ h1, h2, h3, h4, .logo-text, .metric-value, .tf-btn {
   color: var(--color-info);
 }
 
+/* Leverage above liquidation-safe limit for current SL distance */
+.lev-btn.lev-unsafe {
+  border-color: var(--color-bearish);
+  color: var(--color-bearish);
+  background-color: var(--color-bearish-muted);
+  text-decoration: line-through;
+}
+
+.lev-btn.lev-unsafe.active {
+  background-color: var(--color-bearish);
+  color: white;
+  text-decoration: none;
+}
+
 .calc-outputs {
   background-color: var(--bg-app);
   border: 1px solid var(--border-color);

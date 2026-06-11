@@ -34,8 +34,9 @@ import { renderSignalCard } from './ui/signal-card.js';
 import { initCalculator, getCalculatorLeverage } from './ui/calculator.js';
 import { renderTradeLogTable, initExportCSV } from './ui/trade-log-ui.js';
 import { renderBacktestStats } from './ui/backtest-ui.js';
+import { initEngineBacktest } from './ui/engine-backtest-ui.js';
 import { renderAlertsFeed, renderAlertsPopover, updateAlertBadge, playAlertSound } from './ui/alerts-ui.js';
-import { checkCorrelation, isDailyLossLimitReached } from './risk/position-sizing.js';
+import { checkCorrelation, isDailyLossLimitReached, getMaxSafeLeverage } from './risk/position-sizing.js';
 import { sendTelegram, sendTelegramSilent, fetchTelegramUpdates } from './api/telegram.js';
 
 // Alert cooldown constant — minimum ms between same alert type for same trade
@@ -257,7 +258,7 @@ async function runAnalysisForPair(symbol) {
         `TP1: $${sig.tp1.toFixed(2)} (+${(sig.tp1Pct || 0).toFixed(1)}%)\n` +
         `TP2: $${sig.tp2.toFixed(2)} (+${(sig.tp2Pct || 0).toFixed(1)}%)\n` +
         `TP3: $${sig.tp3.toFixed(2)} (+${(sig.tp3Pct || 0).toFixed(1)}%)\n` +
-        `R:R 1:3.0 | Expires in 3H`
+        `R:R 1:${(sig.riskReward || 2).toFixed(1)} | Expires in 3H`
       );
     }
 
@@ -417,6 +418,17 @@ function openTakeTradeModal(signal) {
   const selectLev = document.getElementById('modal-leverage');
   selectLev.value = getCalculatorLeverage();
 
+  // Liquidation guard: max leverage keeping liquidation ≥30% beyond SL
+  const maxSafeLev = getMaxSafeLeverage(signal.entryPrice, signal.stopLoss);
+  const submitBtn = form.querySelector('button[type="submit"]');
+
+  // Clamp pre-selected leverage to safe limit
+  if (parseInt(selectLev.value) > maxSafeLev) {
+    const options = [...selectLev.options].map(o => parseInt(o.value));
+    const safest = options.filter(v => v <= maxSafeLev);
+    selectLev.value = safest.length ? Math.max(...safest) : options[0];
+  }
+
   // Dynamic preview calculations inside modal
   const updateModalPreview = () => {
     const leverage = parseInt(selectLev.value);
@@ -425,7 +437,7 @@ function openTakeTradeModal(signal) {
     const positionSize = riskAmount / slDistance;
     const notional = positionSize * signal.entryPrice;
     const margin = notional / leverage;
-    
+
     let liqPrice = 0;
     if (signal.direction === 'LONG') {
       liqPrice = signal.entryPrice * (1 - (1 / leverage) + 0.005);
@@ -436,6 +448,19 @@ function openTakeTradeModal(signal) {
     document.getElementById('modal-size').innerText = `${positionSize.toFixed(4)} ${signal.pair.replace('USDT', '')}`;
     document.getElementById('modal-margin').innerText = `$${margin.toFixed(2)} USDT`;
     document.getElementById('modal-liq').innerText = `$${liqPrice.toFixed(2)}`;
+    document.getElementById('modal-max-lev').innerText = `${maxSafeLev}x`;
+
+    // Block confirm when selected leverage can liquidate before SL fires
+    const unsafe = leverage > maxSafeLev;
+    const warnEl = document.getElementById('modal-lev-warning');
+    if (warnEl) {
+      warnEl.innerHTML = unsafe
+        ? `<div class="warning-banner"><i class="ti ti-alert-octagon"></i>
+           <span>⛔ BLOCKED: ${leverage}x can liquidate this position before the stop loss triggers.
+           Select ${maxSafeLev}x or lower.</span></div>`
+        : '';
+    }
+    if (submitBtn) submitBtn.disabled = unsafe;
   };
 
   selectLev.addEventListener('change', updateModalPreview);
@@ -453,6 +478,7 @@ function openTakeTradeModal(signal) {
     e.preventDefault();
 
     const finalLeverage = parseInt(selectLev.value);
+    if (finalLeverage > maxSafeLev) return; // hard block — liquidation before SL
     const notes = document.getElementById('modal-notes').value;
 
     const riskAmount = State.settings.accountSize * (State.settings.riskPercent / 100);
@@ -492,6 +518,7 @@ function openTakeTradeModal(signal) {
     cancelBtn.removeEventListener('click', handleCancel);
     form.removeEventListener('submit', handleSubmit);
     selectLev.removeEventListener('change', updateModalPreview);
+    if (submitBtn) submitBtn.disabled = false; // reset for next open
   };
 
   cancelBtn.addEventListener('click', handleCancel);
@@ -1141,6 +1168,9 @@ async function init() {
     if (scannerRefreshBtn) {
       scannerRefreshBtn.addEventListener('click', renderMarketScanner);
     }
+
+    // Engine historical simulation (bar-by-bar backtest with report)
+    initEngineBacktest(() => State.settings.pairs);
 
     // Auto-Backtest button — evaluates expired signals against historical kline data
     const runBacktestBtn = document.getElementById('run-backtest-btn');

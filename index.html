@@ -234,6 +234,20 @@
             </div>
           </div>
 
+          <!-- Engine Historical Backtest (bar-by-bar simulation) -->
+          <div class="chart-card" style="margin-bottom:16px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+              <h3>Engine Historical Simulation (12 Months, All Pairs)</h3>
+              <div style="display:flex;gap:8px;align-items:center;">
+                <button id="run-engine-backtest-btn" class="primary-btn" style="font-size:12px;padding:6px 12px;">
+                  <i class="ti ti-player-play"></i> Run 12-Month Simulation
+                </button>
+              </div>
+            </div>
+            <div id="engine-backtest-status" style="font-size:11px;color:var(--text-muted);margin-top:6px;"></div>
+            <div id="engine-backtest-report"></div>
+          </div>
+
           <div class="backtest-visualizations">
             <div class="chart-card">
               <h3>Win / Loss Sequence (Last 20 Trades)</h3>
@@ -392,7 +406,9 @@
           <div class="preview-row"><span>Position Size</span><strong id="modal-size">-- BTC</strong></div>
           <div class="preview-row"><span>Margin Required</span><strong id="modal-margin">$-- USDT</strong></div>
           <div class="preview-row"><span>Liquidation Price</span><strong id="modal-liq" class="danger-text">$--</strong></div>
+          <div class="preview-row"><span>Max Safe Leverage</span><strong id="modal-max-lev" class="success-text">--x</strong></div>
         </div>
+        <div id="modal-lev-warning"></div>
         <div class="form-group">
           <label for="modal-notes">Trade Notes / Strategy</label>
           <textarea id="modal-notes" class="form-input" rows="2" placeholder="e.g. Entering at limit low, target TP2..."></textarea>

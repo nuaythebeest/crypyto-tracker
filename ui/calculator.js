@@ -160,9 +160,15 @@ export function initCalculator(activeSignal, settings, onSettingsUpdate) {
       gapEl.className = 'danger-text';
     }
 
+    // Mark leverage buttons above the safe limit
+    levButtons.forEach(btn => {
+      const lev = parseInt(btn.dataset.lev);
+      btn.classList.toggle('lev-unsafe', lev > result.maxSafeLeverage);
+    });
+
     // Warning Banner rendering
     let warningHTML = '';
-    
+
     if (result.isMarginWarning) {
       warningHTML += `
         <div class="warning-banner">
@@ -171,12 +177,12 @@ export function initCalculator(activeSignal, settings, onSettingsUpdate) {
         </div>
       `;
     }
-    
+
     if (!result.isSLSafe) {
       warningHTML += `
         <div class="warning-banner">
           <i class="ti ti-alert-octagon"></i>
-          <span>SL too close to liquidation price. Recommendation: Reduce leverage to <strong>${result.maxSafeLeverage}x</strong> or lower.</span>
+          <span>⛔ LIQUIDATION RISK: at ${currentLeverage}x, price can liquidate you before the stop loss fires. Max safe leverage for this setup: <strong>${result.maxSafeLeverage}x</strong>.</span>
         </div>
       `;
     } else if (currentLeverage > 10) {

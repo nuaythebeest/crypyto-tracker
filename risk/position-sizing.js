@@ -5,6 +5,21 @@
  */
 
 const MAINTENANCE_MARGIN_RATE = 0.005; // 0.50% standard tier for BTC, ETH, SOL, BNB, XRP
+const LIQ_SAFETY_FACTOR = 1.3;         // liquidation must sit ≥ 1.3× SL distance from entry
+
+/**
+ * Max leverage that keeps liquidation price at least 30% beyond the stop loss.
+ * @param {number} entryPrice
+ * @param {number} stopLossPrice
+ * @returns {number} integer leverage 1–20
+ */
+export function getMaxSafeLeverage(entryPrice, stopLossPrice) {
+  const slDistFraction = Math.abs(entryPrice - stopLossPrice) / entryPrice;
+  if (!isFinite(slDistFraction) || slDistFraction <= 0) return 20;
+  return Math.min(20, Math.max(1,
+    Math.floor(1 / (LIQ_SAFETY_FACTOR * slDistFraction + MAINTENANCE_MARGIN_RATE))
+  ));
+}
 
 const CORRELATION_GROUPS = {
   high: ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'],
@@ -56,21 +71,16 @@ export function calculatePosition(params) {
   } else {
     slToLiqBuffer = ((liquidationPrice - stopLossPrice) / stopLossPrice) * 100;
   }
-  const isSLSafe = slToLiqBuffer >= 2;
 
-  // Calculate recommended safe leverage
-  let maxSafeLeverage = leverage;
-  if (!isSLSafe) {
-    if (direction === 'LONG') {
-      const denom = 1 + MAINTENANCE_MARGIN_RATE - (stopLossPrice * 0.98) / entryPrice;
-      maxSafeLeverage = denom > 0 ? Math.floor(1 / denom) : 20;
-    } else {
-      const denom = (stopLossPrice * 1.02) / entryPrice - 1 + MAINTENANCE_MARGIN_RATE;
-      maxSafeLeverage = denom > 0 ? Math.floor(1 / denom) : 20;
-    }
-    // Cap recommended leverage to 20x max
-    maxSafeLeverage = Math.min(20, Math.max(1, maxSafeLeverage));
-  }
+  // Liquidation guard: liquidation distance must be ≥ 1.3 × SL distance,
+  // i.e. even if price blows 30% past the stop, the position is stopped out — never liquidated.
+  // liqDistance(fraction) = 1/leverage − MMR  ⟹  maxLev = 1 / (1.3 × slDist + MMR)
+  const slDistFraction = slDistancePrice / entryPrice;
+  const maxSafeLeverage = Math.min(20, Math.max(1,
+    Math.floor(1 / (LIQ_SAFETY_FACTOR * slDistFraction + MAINTENANCE_MARGIN_RATE))
+  ));
+  const liqDistFraction = (1 / leverage) - MAINTENANCE_MARGIN_RATE;
+  const isSLSafe = liqDistFraction >= LIQ_SAFETY_FACTOR * slDistFraction;
 
   return {
     riskAmount: parseFloat(riskAmount.toFixed(2)),

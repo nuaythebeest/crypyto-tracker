@@ -356,3 +356,43 @@ Set these in Railway → Variables:
 | MODIFIED | `app.js` (State: alertCooldowns+lastTelegramUpdateId, cooldown logic, re-alert guard, processTelegramReplies, background scan timer) |
 | MODIFIED | `api/telegram.js` (add fetchTelegramUpdates export) |
 | UPDATED | `CHANGE.md` |
+
+### 32. Trade Log Scroll + Trade-Log Auto-Backtest (commit fbc5ac0)
+- **Problem**: Trade log table clipped (no horizontal/vertical scroll); Backtest page always showed 0/0 because all signals were `observed` and never evaluated.
+- **Solution**: `.table-container` overflow fixed; `#page-tradelog`/`#page-backtest` height freed for scrolling. Added `fetchKlinesRange` + `autoEvaluateExpiredSignals()` — "Auto-Backtest" button grades expired observed signals by first TP1/SL touch on 1H candles and writes simulated PnL into the log.
+
+### 33. Liquidation Guard — Leverage Capped by Stop-Loss Distance
+- **Problem**: Repeated real liquidations. With e.g. SL at −3.5% and 20x leverage, the liquidation price (~−4.5%) sits close behind the stop; any wick through both kills the whole margin instead of a controlled SL exit. Old guard only required a 2% price gap.
+- **Solution** (`risk/position-sizing.js`, `ui/calculator.js`, `app.js`, `index.html`):
+  - New rule: liquidation distance must be ≥ **1.3× SL distance** (`maxLev = 1 / (1.3 × slDist + 0.5% MMR)`).
+  - `getMaxSafeLeverage(entry, sl)` exported and shown in calculator + take-trade modal.
+  - Calculator marks unsafe leverage buttons red/struck-through with explicit warning.
+  - Take-trade modal: pre-selected leverage auto-clamped to safe value; selecting an unsafe leverage disables the Confirm button (hard block) and shows the max safe value.
+
+### 34. Historical Backtester + Data-Driven Engine Retune
+- **Problem**: Engine parameters (threshold, filters, TP distances) were guesses. Live results: losing streaks, especially shorts. Needed measured evidence.
+- **Solution**:
+  - `engine/backtester.js` — replays `analyzeMarket()` bar-by-bar over 12 months × 5 pairs with **no lookahead** (trailing 200-candle windows incl. aggregated partial 4H/1D/1W candles, mirrors live exactly). Candidates captured at score ≥ 60 with all block flags (candidateMode in `signal-engine.js`), each graded against a 3 SL-mult × 5 TP-distance outcome grid by first-touch walk-forward (48H horizon, both-touch = loss, conservative). Funding history included.
+  - `scripts/run-backtest.mjs` + `scripts/analyze-backtest.mjs` — headless Node runners; `ui/engine-backtest-ui.js` + Backtest page section — in-browser simulation + full report (persisted to localStorage).
+  - Tuner: grid search over 2,400 configs, trained on first 9 months, validated on last 3 (holdout).
+- **Measured results (5,945 candidate signals, Jun 2025 → Jun 2026)**:
+  | Config | Win rate | Expectancy | Holdout |
+  |---|---|---|---|
+  | Original (thr 70, no filters, TP 1.5R) | 40.1% | +0.05R | — |
+  | Previous live (thr 77 + filters, TP 1.5R) | 42.7% | +0.09R | **−0.08R (LOSES)** |
+  | **New live (ADX ≥ 25, TP1 = 1.0R)** | **56.1% train** | **+0.11R train** | **57.9% / +0.08R (HOLDS)** |
+- **Key findings (honest)**:
+  - Confidence score has ~no predictive power: 42–45% win rate in every bucket 60→90+. Threshold is volume control only.
+  - ADX ≥ 25 was the **only** filter improving both train and holdout. Weekly/RSI/funding filters never bind at thr 77 (kept as free safety rails).
+  - TP distance is the real win-rate lever: 0.8R ≈ 61%, 1.0R ≈ 55–58%, 1.5R ≈ 43%, 3R ≈ 22% — the old 1.5R/3R/5R ladder failed out-of-sample.
+  - **70–80% win rate with positive expectancy was NOT achievable** on 12-month data. Best robust: ~56–65% (recent 3-month BTC sample: 76%, n=23 — small sample, do not extrapolate).
+  - Naive grid-tuning overfits: top train configs (TP 3R) all lost on holdout. Watch item: BOS-flagged signals underperform (not blocked yet, sample too small).
+- **Applied to live engine**: ADX gate 18 → **25**; TP ladder 1.5/3/5R → **1.0/2.0/3.0R**; R:R label 1:3 → 1:2; threshold stays 77.
+- Fees note: ~0.04R/trade round-trip taker fees not modeled; net expectancy ≈ +0.02–0.07R/trade. Prefer limit entries.
+
+### Files Changed
+| Action | File |
+|---|---|
+| NEW | `engine/backtester.js`, `ui/engine-backtest-ui.js`, `scripts/run-backtest.mjs`, `scripts/analyze-backtest.mjs` |
+| MODIFIED | `engine/signal-engine.js` (candidateMode, ADX 25, TP 1.0/2.0/3.0R) |
+| MODIFIED | `risk/position-sizing.js`, `ui/calculator.js`, `app.js`, `index.html`, `style.css` (liquidation guard, backtest UI) |

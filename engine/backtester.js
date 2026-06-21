@@ -196,6 +196,45 @@ function gradeCandidate(klines1h, i, sig, horizonBars) {
 }
 
 /**
+ * Path stats at the live SL (1.5×ATR) for the "near-miss then SL" question:
+ *  - mfe: max favorable excursion in R before the trade resolves (TP 0.8R / SL / timeout)
+ *  - be03 / be05: outcome R if SL is moved to breakeven once price reaches +0.3R / +0.5R
+ * ponytail: only graded at SL 1.5 + TP 0.8 (the live cell); other cells don't need it.
+ */
+function gradePath(klines1h, i, sig, horizonBars, slMult = 1.5, tpR = 0.8) {
+  const entry = sig.entryPrice;
+  const isLong = sig.direction === 'LONG';
+  const slDist = slMult * sig.atr4h;
+  const sl = isLong ? entry - slDist : entry + slDist;
+  const tp = isLong ? entry + tpR * slDist : entry - tpR * slDist;
+  const lastIdx = Math.min(klines1h.length - 1, i + horizonBars);
+
+  let mfe = 0;
+  const be = (trig) => {
+    let moved = false;
+    for (let k = i + 1; k <= lastIdx; k++) {
+      const hi = klines1h[k][2], lo = klines1h[k][3];
+      const favHi = (isLong ? hi - entry : entry - lo) / slDist; // best case this bar
+      if (favHi >= trig) moved = true;
+      const stop = moved ? entry : sl;
+      if (isLong ? lo <= stop : hi >= stop) return moved ? 0 : -1;
+      if (isLong ? hi >= tp : lo <= tp) return tpR;
+    }
+    const px = klines1h[lastIdx][4];
+    return (isLong ? px - entry : entry - px) / slDist;
+  };
+
+  for (let k = i + 1; k <= lastIdx; k++) {
+    const fav = (isLong ? klines1h[k][2] - entry : entry - klines1h[k][3]) / slDist;
+    if (fav > mfe) mfe = fav;
+    const slHit = isLong ? klines1h[k][3] <= sl : klines1h[k][2] >= sl;
+    const tpHit = isLong ? klines1h[k][2] >= tp : klines1h[k][3] <= tp;
+    if (slHit || tpHit) break;
+  }
+  return { mfe: parseFloat(mfe.toFixed(2)), be03: be(0.3), be05: be(0.5) };
+}
+
+/**
  * Simulate one pair bar-by-bar. Returns candidate records.
  * @param {string} symbol
  * @param {Object} data - { klines1h, klines4h, klines1d, klines1w } covering warmup + test period
@@ -321,7 +360,8 @@ export async function simulatePair(symbol, data, funding, opts = {}) {
         rsi: analysis.isRsiBlocked,
         adx: analysis.isAdxBlocked
       },
-      grid: gradeCandidate(klines1h, i, sig, horizonBars)
+      grid: gradeCandidate(klines1h, i, sig, horizonBars),
+      path: gradePath(klines1h, i, sig, horizonBars)
     });
   }
 

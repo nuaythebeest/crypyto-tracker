@@ -255,10 +255,10 @@ async function runAnalysisForPair(symbol) {
         `Confidence: ${sig.confidence}%\n` +
         `Entry: $${sig.entryPrice.toFixed(2)}\n` +
         `SL: $${sig.stopLoss.toFixed(2)} (-${(sig.slDistancePct || 0).toFixed(1)}%)\n` +
-        `TP1: $${sig.tp1.toFixed(2)} (+${(sig.tp1Pct || 0).toFixed(1)}%)\n` +
-        `TP2: $${sig.tp2.toFixed(2)} (+${(sig.tp2Pct || 0).toFixed(1)}%)\n` +
-        `TP3: $${sig.tp3.toFixed(2)} (+${(sig.tp3Pct || 0).toFixed(1)}%)\n` +
-        `R:R 1:${(sig.riskReward || 2).toFixed(1)} | Expires in 3H`
+        `TP1: $${sig.tp1.toFixed(2)} (+${(sig.tp1Pct || 0).toFixed(1)}%) ⬅ PRIMARY EXIT (68% hit)\n` +
+        `TP2: $${sig.tp2.toFixed(2)} (+${(sig.tp2Pct || 0).toFixed(1)}%) — bonus only (33% hit)\n` +
+        `TP3: $${sig.tp3.toFixed(2)} (+${(sig.tp3Pct || 0).toFixed(1)}%) — rarely reached (18%)\n` +
+        `Close full position at TP1. Expires in 3H`
       );
     }
 
@@ -596,9 +596,10 @@ function checkLivePriceAlerts(pair, price) {
         sendTelegramSilent(
           `🎯 <b>TP1 HIT — ${trade.pair} ${trade.direction}</b>\n` +
           `Price reached $${price.toFixed(2)}\n` +
-          `Action: Close 50% of position now.\n` +
-          `Move Stop Loss to breakeven (entry price) ✅\n` +
-          `Reply <b>close</b> to stop further alerts.`
+          `Action: CLOSE FULL POSITION now. ✅\n` +
+          `Backtest: TP1 wins 68%. Holding for TP2/TP3 wins only 33%/18% —\n` +
+          `that is where "almost hit target then reversed to SL" happens.\n` +
+          `Reply <b>close</b> to log the win.`
         );
       }
     }
@@ -610,7 +611,7 @@ function checkLivePriceAlerts(pair, price) {
         sendTelegramSilent(
           `🎯 <b>TP2 HIT — ${trade.pair} ${trade.direction}</b>\n` +
           `Price reached $${price.toFixed(2)}\n` +
-          `Action: Close remaining position or trail SL to TP1. 🏆\n` +
+          `Bonus — you should already be out at TP1. Close everything now. 🏆\n` +
           `Reply <b>close</b> to stop further alerts.`
         );
       }
